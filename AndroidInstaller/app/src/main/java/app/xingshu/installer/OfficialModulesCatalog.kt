@@ -29,6 +29,7 @@ object OfficialModulesCatalog {
         OfficialModule("player-star-buffs", "角色Buff显示", "在左侧角色头像⭐区域显示疾行与角色专属 Buff 图标，支持分类筛选", "对局信息"),
         OfficialModule("megath-damage", "梅加斯伤害计算", "游玩梅加斯时显示主动技能理论最大伤害面板（可拖动调节位置）", "战术推演"),
         OfficialModule("player-combat-hud", "角色状态头顶显示", "在棋盘玩家角色上方显示技能冷却、血量、攻防与最终移速（可调节位置）", "对局信息"),
+        OfficialModule("credit-guard", "信誉分与车队", "局内显示星枢社区信誉分与拔线率，支持点赞、拉黑、星枢反馈、高信誉开房、自动跟房与组队", "对局信息"),
     )
 
     val GROUPS: List<String> = listOf("全部", "对局信息", "战术推演", "操作与画面", "快捷与娱乐")
