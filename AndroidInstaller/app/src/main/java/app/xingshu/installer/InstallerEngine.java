@@ -1316,7 +1316,7 @@ final class InstallerEngine {
     private static final Set<String> LOBBY_BG_IMAGE_EXTS = new LinkedHashSet<>(Arrays.asList(
             ".png", ".jpg", ".jpeg", ".bmp", ".webp"));
     private static final Set<String> LOBBY_BG_VIDEO_EXTS = new LinkedHashSet<>(Arrays.asList(
-            ".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"));
+            ".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v", ".xsvid"));
     private static final Set<String> LOBBY_BG_USM_EXTS = new LinkedHashSet<>(Arrays.asList(
             ".usm"));
     private static final Set<String> CUSTOM_FONT_EXTS = new LinkedHashSet<>(Arrays.asList(
@@ -1377,7 +1377,7 @@ final class InstallerEngine {
             long maxBytes;
             if ("lobbybg".equals(kind)) {
                 if (classifyLobbyBgMediaKind(safeName) == null) {
-                    throw new IllegalArgumentException("不支持的大厅背景格式（仅支持 png/jpg/webp/bmp 图片或 mp4/mov/webm/mkv/usm 视频）");
+                    throw new IllegalArgumentException("不支持的大厅背景格式（仅支持 png/jpg/webp/bmp 图片或 mp4/mov/webm/mkv/xsvid/usm 视频）");
                 }
                 destDir = new File(filesRoot, "lobbybg");
                 maxBytes = 300L * 1024L * 1024L;

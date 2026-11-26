@@ -66,6 +66,13 @@ namespace XingShuRuntime.Utilities
         private Texture2D _loadedImageTex;
         private RenderTexture _videoRt;
         private AssetBundle _loadedCriBundle;
+        private FileStream _xsvidStream;
+        private CustomLobbyBgPolicy.XsvidHeader _xsvidHeader;
+        private Texture2D _xsvidTex;
+        private int _xsvidCurrentFrame = -1;
+        private double _xsvidClockSeconds;
+        private double _xsvidLastTickAt;
+        private bool _xsvidPausedForAway;
         private Component _videoPlayer;
         private GameObject _videoGo;
 
@@ -632,12 +639,15 @@ namespace XingShuRuntime.Utilities
                 TickVideoPlayback();
 
                 bool anyLobbySurfaceVisible = homeVisible || bgVisible;
+                TickMotionStream(anyLobbySurfaceVisible);
                 UpdateVideoPowerState(anyLobbySurfaceVisible);
 
                 GGraph homeGraph = uiHome != null && uiHome.Com_BGSet != null ? uiHome.Com_BGSet.loader_Video : null;
                 GGraph subGraph = uiBg != null ? uiBg.loader_BG : null;
 
-                bool overlayActive = (ActiveMediaKind == LobbyBgMediaKind.Image || ActiveMediaKind == LobbyBgMediaKind.Video) && _activeNTexture != null;
+                bool overlayActive = (ActiveMediaKind == LobbyBgMediaKind.Image
+                    || ActiveMediaKind == LobbyBgMediaKind.Video
+                    || ActiveMediaKind == LobbyBgMediaKind.MotionStream) && _activeNTexture != null;
                 if (overlayActive)
                 {
                     if (homeGraph != null && !homeGraph.isDisposed)
@@ -969,6 +979,10 @@ namespace XingShuRuntime.Utilities
                         if (hadCriOverride) RestoreHomeVanillaCri(FindHomePanel());
                         LoadVideoFile(fullPath, fileName);
                         break;
+                    case LobbyBgMediaKind.MotionStream:
+                        if (hadCriOverride) RestoreHomeVanillaCri(FindHomePanel());
+                        LoadMotionStreamFile(fullPath, fileName);
+                        break;
                     case LobbyBgMediaKind.CriUsm:
                     case LobbyBgMediaKind.UnityBundle:
                         BeginCriOverride(fullPath, fileName, kind);
@@ -1238,24 +1252,47 @@ namespace XingShuRuntime.Utilities
             {
                 _autoLoadFailedForCurrentFile = true;
                 ActiveMediaLabel = $"不支持视频播放: {fileName}";
-                StatusMsg = $"当前客户端未内置 VideoPlayer({vpCaps})，请改用图片或 .usm / .bundle";
+                StatusMsg = $"当前客户端未内置 VideoPlayer({vpCaps})，请改用图片、.xsvid 或 .usm";
                 TeardownActiveMedia(restoreVanilla: true);
                 return false;
             }
 
             string diagError = "";
             byte[] pngBytes = null;
+            string asciiPath = EnsureAndroidAsciiCacheCopy(fullPath);
             AndroidJavaObject mmr = null;
+            AndroidJavaObject fis = null;
             IntPtr pathPtr = IntPtr.Zero;
             try
             {
                 mmr = new AndroidJavaObject("android.media.MediaMetadataRetriever");
-                pathPtr = AndroidJNI.NewString(fullPath);
-                if (!InvokeAndroidJniReflected(mmr, "setDataSource", new[] { "java.lang.String" }, new[] { pathPtr }))
+                bool ok = false;
+                try
                 {
-                    diagError = "MediaMetadataRetriever.setDataSource 失败";
+                    fis = new AndroidJavaObject("java.io.FileInputStream", asciiPath);
+                    using (var fd = fis.Call<AndroidJavaObject>("getFD"))
+                    {
+                        if (fd != null)
+                        {
+                            ok = InvokeAndroidJniReflected(mmr, "setDataSource", new[] { "java.io.FileDescriptor" }, new[] { fd.GetRawObject() });
+                        }
+                    }
                 }
-                else
+                catch (Exception exFd)
+                {
+                    diagError = "FD:" + exFd.Message;
+                }
+                if (!ok)
+                {
+                    pathPtr = AndroidJNI.NewString(asciiPath);
+                    ok = InvokeAndroidJniReflected(mmr, "setDataSource", new[] { "java.lang.String" }, new[] { pathPtr });
+                    if (!ok && string.IsNullOrEmpty(diagError))
+                    {
+                        diagError = "setDataSource(String) 失败";
+                    }
+                }
+
+                if (ok)
                 {
                     using (var frameBmp = mmr.Call<AndroidJavaObject>("getFrameAtTime", 0L))
                     {
@@ -1277,6 +1314,11 @@ namespace XingShuRuntime.Utilities
             finally
             {
                 if (pathPtr != IntPtr.Zero) AndroidJNI.DeleteLocalRef(pathPtr);
+                if (fis != null)
+                {
+                    try { InvokeAndroidJniReflected(fis, "close", null, null); } catch { }
+                    try { fis.Dispose(); } catch { }
+                }
                 if (mmr != null)
                 {
                     try { InvokeAndroidJniReflected(mmr, "release", null, null); } catch { }
@@ -1287,8 +1329,8 @@ namespace XingShuRuntime.Utilities
             if (pngBytes == null || pngBytes.Length < 16)
             {
                 _autoLoadFailedForCurrentFile = true;
-                ActiveMediaLabel = $"视频引擎不可用: {fileName}";
-                StatusMsg = $"未内置 VideoPlayer({vpCaps})，且首帧回退失败: {diagError}";
+                ActiveMediaLabel = $"需重新导入转码: {fileName}";
+                StatusMsg = $"请到星枢启动器「自定义→主页背景」重新导入该 MP4（将自动硬件转码为手机动态背景）；回退原因: {diagError}";
                 TeardownActiveMedia(restoreVanilla: true);
                 return false;
             }
@@ -1298,8 +1340,8 @@ namespace XingShuRuntime.Utilities
             {
                 Destroy(tex);
                 _autoLoadFailedForCurrentFile = true;
-                ActiveMediaLabel = $"视频引擎不可用: {fileName}";
-                StatusMsg = $"未内置 VideoPlayer({vpCaps})，首帧纹理生成失败";
+                ActiveMediaLabel = $"需重新导入转码: {fileName}";
+                StatusMsg = $"首帧纹理生成失败，请在星枢启动器「自定义→主页背景」重新导入该 MP4";
                 TeardownActiveMedia(restoreVanilla: true);
                 return false;
             }
@@ -1314,8 +1356,191 @@ namespace XingShuRuntime.Utilities
             ActiveMediaKind = LobbyBgMediaKind.Image;
             ActiveMediaLabel = $"{fileName} ({tex.width}x{tex.height} 首帧兼容)";
             BindNTextureToLoaders(nt);
-            StatusMsg = $"客户端裁剪了 VideoPlayer({vpCaps})，已自动应用视频高清首帧（动态背景请用 .usm / .bundle 或静态图）";
+            StatusMsg = $"已显示首帧静态图；请在星枢启动器「自定义→主页背景」重新导入视频以转为流畅动态背景";
             return true;
+        }
+
+        private void LoadMotionStreamFile(string fullPath, string fileName)
+        {
+            FileStream fs = null;
+            try
+            {
+                fs = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                if (!CustomLobbyBgPolicy.TryParseXsvidIndex(fs, out var header, out string err))
+                {
+                    fs.Dispose();
+                    _autoLoadFailedForCurrentFile = true;
+                    ActiveMediaLabel = $"动态包无效: {fileName}";
+                    StatusMsg = $"动态背景格式校验失败: {err}";
+                    TeardownActiveMedia(restoreVanilla: true);
+                    return;
+                }
+
+                byte[] frame0 = ReadStreamSlice(fs, header.Frames[0].Offset, header.Frames[0].Length);
+                Texture2D tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+                if (frame0 == null || !ImageConversion.LoadImage(tex, frame0, false))
+                {
+                    Destroy(tex);
+                    fs.Dispose();
+                    _autoLoadFailedForCurrentFile = true;
+                    ActiveMediaLabel = $"动态帧解码失败: {fileName}";
+                    StatusMsg = $"动态背景首帧解码失败: {fileName}";
+                    TeardownActiveMedia(restoreVanilla: true);
+                    return;
+                }
+
+                tex.name = "XingShu_LobbyBg_Xsvid_" + fileName;
+                tex.wrapMode = TextureWrapMode.Clamp;
+                _xsvidStream = fs;
+                _xsvidHeader = header;
+                _xsvidTex = tex;
+                _xsvidCurrentFrame = 0;
+                _xsvidClockSeconds = 0.0;
+                _xsvidLastTickAt = ThinkingClock.RealSeconds();
+                _xsvidPausedForAway = false;
+                fs = null;
+
+                NTexture nt = new NTexture(tex);
+                nt.destroyMethod = DestroyMethod.None;
+                nt.AddRef();
+                _activeNTexture = nt;
+                ActiveMediaKind = LobbyBgMediaKind.MotionStream;
+                ActiveMediaLabel = $"{fileName} ({header.Width}x{header.Height} {header.FpsMilli / 1000.0:F0}fps 动态)";
+                BindNTextureToLoaders(nt);
+
+                string audioPath = ExtractOrFindMotionAudio(fullPath, header);
+                if (!string.IsNullOrEmpty(audioPath))
+                {
+                    _companionAudio.StartFile(audioPath, _muted, _volume, _speed, false, 0.0);
+                }
+
+                StatusMsg = $"已应用动态大厅背景: {fileName} ({header.Width}×{header.Height}, {header.FrameCount} 帧)";
+            }
+            catch (Exception ex)
+            {
+                if (fs != null)
+                {
+                    try { fs.Dispose(); } catch { }
+                }
+                _autoLoadFailedForCurrentFile = true;
+                ActiveMediaLabel = $"动态包异常: {fileName}";
+                StatusMsg = $"加载动态背景失败({ex.GetType().Name}): {ex.Message}";
+                TeardownActiveMedia(restoreVanilla: true);
+            }
+        }
+
+        private string ExtractOrFindMotionAudio(string xsvidPath, CustomLobbyBgPolicy.XsvidHeader header)
+        {
+            try
+            {
+                if (_xsvidStream != null && header != null && header.AudioLength > 0)
+                {
+                    string cacheDir = Application.temporaryCachePath;
+                    if (!string.IsNullOrEmpty(cacheDir))
+                    {
+                        if (!Directory.Exists(cacheDir)) Directory.CreateDirectory(cacheDir);
+                        string baseName = CustomLobbyBgPolicy.BuildAndroidAsciiCacheFileName(xsvidPath + ".m4a");
+                        string m4aPath = Path.Combine(cacheDir, Path.ChangeExtension(baseName, ".m4a"));
+                        var srcInfo = new FileInfo(xsvidPath);
+                        bool needWrite = !File.Exists(m4aPath);
+                        if (!needWrite)
+                        {
+                            var dstInfo = new FileInfo(m4aPath);
+                            if (dstInfo.Length != header.AudioLength || dstInfo.LastWriteTimeUtc < srcInfo.LastWriteTimeUtc)
+                            {
+                                needWrite = true;
+                            }
+                        }
+                        if (needWrite)
+                        {
+                            byte[] audioBytes = ReadStreamSlice(_xsvidStream, header.AudioOffset, header.AudioLength);
+                            if (audioBytes != null && audioBytes.Length == header.AudioLength)
+                            {
+                                File.WriteAllBytes(m4aPath, audioBytes);
+                            }
+                        }
+                        if (File.Exists(m4aPath)) return m4aPath;
+                    }
+                }
+                string siblingMp4 = Path.ChangeExtension(xsvidPath, ".mp4");
+                if (!string.IsNullOrEmpty(siblingMp4) && File.Exists(siblingMp4))
+                {
+                    return siblingMp4;
+                }
+            }
+            catch
+            {
+            }
+            return "";
+        }
+
+        private void TickMotionStream(bool anyLobbyVisible)
+        {
+            if (ActiveMediaKind != LobbyBgMediaKind.MotionStream || _xsvidStream == null || _xsvidHeader == null || _xsvidTex == null)
+            {
+                return;
+            }
+            double now = ThinkingClock.RealSeconds();
+            if (!anyLobbyVisible)
+            {
+                if (!_xsvidPausedForAway)
+                {
+                    _xsvidPausedForAway = true;
+                    try { _companionAudio.SetPaused(true); } catch { }
+                }
+                _xsvidLastTickAt = now;
+                return;
+            }
+
+            if (_xsvidPausedForAway)
+            {
+                _xsvidPausedForAway = false;
+                _xsvidLastTickAt = now;
+                try { _companionAudio.SetPaused(false); } catch { }
+                return;
+            }
+
+            double dt = now - _xsvidLastTickAt;
+            _xsvidLastTickAt = now;
+            if (dt > 0.0)
+            {
+                if (dt > 0.25) dt = 0.25;
+                _xsvidClockSeconds += dt * _speed;
+            }
+
+            int targetFrame = CustomLobbyBgPolicy.ComputeMotionStreamFrameIndex(_xsvidClockSeconds, _xsvidHeader.FpsMilli, 1.0f, _xsvidHeader.FrameCount);
+            if (targetFrame == _xsvidCurrentFrame)
+            {
+                return;
+            }
+
+            bool wrapped = targetFrame < _xsvidCurrentFrame;
+            var entry = _xsvidHeader.Frames[targetFrame];
+            byte[] jpeg = ReadStreamSlice(_xsvidStream, entry.Offset, entry.Length);
+            if (jpeg != null)
+            {
+                ImageConversion.LoadImage(_xsvidTex, jpeg, false);
+                _xsvidCurrentFrame = targetFrame;
+                if (wrapped && _companionAudio.HasAudio)
+                {
+                    try { _companionAudio.RequestSeek(0.0); } catch { }
+                }
+            }
+        }
+
+        private static byte[] ReadStreamSlice(Stream s, long offset, int length)
+        {
+            if (s == null || length <= 0) return null;
+            s.Position = offset;
+            byte[] buf = new byte[length];
+            int read = 0;
+            while (read < length)
+            {
+                int n = s.Read(buf, read, length - read);
+                if (n <= 0) return null;
+                read += n;
+            }
+            return buf;
         }
 
         private void LoadVideoFile(string fullPath, string fileName)
@@ -1332,6 +1557,12 @@ namespace XingShuRuntime.Utilities
             {
                 if (!IsVideoPlayerApiUsable())
                 {
+                    string siblingXsvid = Path.ChangeExtension(fullPath, ".xsvid");
+                    if (!string.IsNullOrEmpty(siblingXsvid) && File.Exists(siblingXsvid))
+                    {
+                        LoadMotionStreamFile(siblingXsvid, Path.GetFileName(siblingXsvid));
+                        return;
+                    }
                     TryFallbackAndroidVideoPoster(fullPath, fileName, DescribeVideoPlayerCaps());
                     return;
                 }
@@ -2188,6 +2419,7 @@ namespace XingShuRuntime.Utilities
 
             ReleaseActiveNTexture();
             ReleaseRenderTexture();
+            ReleaseMotionStream();
             ReleaseImageTex();
             ReleaseCriBundle();
 
@@ -2240,6 +2472,24 @@ namespace XingShuRuntime.Utilities
             {
                 try { Destroy(_loadedImageTex); } catch { }
                 _loadedImageTex = null;
+            }
+        }
+
+        private void ReleaseMotionStream()
+        {
+            _xsvidCurrentFrame = -1;
+            _xsvidClockSeconds = 0.0;
+            _xsvidPausedForAway = false;
+            _xsvidHeader = null;
+            if (_xsvidStream != null)
+            {
+                try { _xsvidStream.Dispose(); } catch { }
+                _xsvidStream = null;
+            }
+            if (_xsvidTex != null)
+            {
+                try { Destroy(_xsvidTex); } catch { }
+                _xsvidTex = null;
             }
         }
 

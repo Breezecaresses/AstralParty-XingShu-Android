@@ -13,6 +13,7 @@ namespace XingShuRuntime.Utilities
         Image = 2,
         CriUsm = 3,
         UnityBundle = 4,
+        MotionStream = 5,
     }
 
     internal enum LobbyBgFillMode
@@ -71,6 +72,8 @@ namespace XingShuRuntime.Utilities
                     return LobbyBgMediaKind.CriUsm;
                 case ".bundle":
                     return LobbyBgMediaKind.UnityBundle;
+                case ".xsvid":
+                    return LobbyBgMediaKind.MotionStream;
                 default:
                     return LobbyBgMediaKind.Unknown;
             }
@@ -84,6 +87,7 @@ namespace XingShuRuntime.Utilities
                 case LobbyBgMediaKind.Image: return "静态图";
                 case LobbyBgMediaKind.CriUsm: return "USM 动效";
                 case LobbyBgMediaKind.UnityBundle: return "VKVLoop 包";
+                case LobbyBgMediaKind.MotionStream: return "动态视频";
                 default: return "未知";
             }
         }
@@ -878,6 +882,178 @@ namespace XingShuRuntime.Utilities
                 }
             }
             return false;
+        }
+
+        internal struct XsvidFrameEntry
+        {
+            public long Offset;
+            public int Length;
+        }
+
+        internal sealed class XsvidHeader
+        {
+            public int Width;
+            public int Height;
+            public int FpsMilli;
+            public int FrameCount;
+            public long AudioOffset;
+            public int AudioLength;
+            public XsvidFrameEntry[] Frames;
+        }
+
+        internal static bool TryParseXsvidIndex(Stream stream, out XsvidHeader header, out string error)
+        {
+            header = null;
+            error = "";
+            if (stream == null || !stream.CanRead || !stream.CanSeek)
+            {
+                error = "流不可读取或不可定位";
+                return false;
+            }
+            try
+            {
+                long fileLen = stream.Length;
+                if (fileLen < 40)
+                {
+                    error = "文件长度不足 40 字节头";
+                    return false;
+                }
+                stream.Position = 0;
+                byte[] hdr = ReadExactBytes(stream, 40);
+                if (hdr == null)
+                {
+                    error = "读取文件头失败";
+                    return false;
+                }
+                if (hdr[0] != (byte)'X' || hdr[1] != (byte)'S' || hdr[2] != (byte)'V' || hdr[3] != (byte)'D')
+                {
+                    error = "无效的 XSVD 魔数标识";
+                    return false;
+                }
+                uint version = ReadUInt32LE(hdr, 4);
+                uint width = ReadUInt32LE(hdr, 8);
+                uint height = ReadUInt32LE(hdr, 12);
+                uint fpsMilli = ReadUInt32LE(hdr, 16);
+                uint frameCount = ReadUInt32LE(hdr, 20);
+                ulong audioOffset = ReadUInt64LE(hdr, 24);
+                uint audioLength = ReadUInt32LE(hdr, 32);
+
+                if (version != 1)
+                {
+                    error = "不支持的 XSVD 版本: " + version;
+                    return false;
+                }
+                if (width < 2 || width > 2048 || height < 2 || height > 2048)
+                {
+                    error = string.Format("分辨率超出范围: {0}x{1}", width, height);
+                    return false;
+                }
+                if (fpsMilli < 1000 || fpsMilli > 60000)
+                {
+                    error = "帧率超出范围: " + fpsMilli;
+                    return false;
+                }
+                if (frameCount < 1 || frameCount > 3600)
+                {
+                    error = "帧数超出范围: " + frameCount;
+                    return false;
+                }
+                if (audioLength > 64u * 1024u * 1024u)
+                {
+                    error = "内嵌伴音超出大小限制";
+                    return false;
+                }
+                if (audioLength > 0)
+                {
+                    if (audioOffset < 40 || audioOffset > (ulong)fileLen || (ulong)audioLength > (ulong)fileLen - audioOffset)
+                    {
+                        error = "伴音区间越界";
+                        return false;
+                    }
+                }
+
+                int indexBytes = (int)frameCount * 12;
+                if (40L + indexBytes > fileLen)
+                {
+                    error = "帧索引表被截断";
+                    return false;
+                }
+                byte[] idxBuf = ReadExactBytes(stream, indexBytes);
+                if (idxBuf == null)
+                {
+                    error = "读取帧索引表失败";
+                    return false;
+                }
+
+                var frames = new XsvidFrameEntry[frameCount];
+                for (int i = 0; i < (int)frameCount; i++)
+                {
+                    int off = i * 12;
+                    ulong fOff = ReadUInt64LE(idxBuf, off);
+                    uint fLen = ReadUInt32LE(idxBuf, off + 8);
+                    if (fLen < 16 || fLen > 4u * 1024u * 1024u || fOff < (ulong)(40 + indexBytes) || fOff > (ulong)fileLen || (ulong)fLen > (ulong)fileLen - fOff)
+                    {
+                        error = string.Format("第 {0} 帧偏移或长度越界", i);
+                        return false;
+                    }
+                    frames[i] = new XsvidFrameEntry { Offset = (long)fOff, Length = (int)fLen };
+                }
+
+                header = new XsvidHeader
+                {
+                    Width = (int)width,
+                    Height = (int)height,
+                    FpsMilli = (int)fpsMilli,
+                    FrameCount = (int)frameCount,
+                    AudioOffset = (long)audioOffset,
+                    AudioLength = (int)audioLength,
+                    Frames = frames,
+                };
+                return true;
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                return false;
+            }
+        }
+
+        internal static int ComputeMotionStreamFrameIndex(double elapsedSeconds, int fpsMilli, float speed, int frameCount)
+        {
+            if (frameCount <= 1 || double.IsNaN(elapsedSeconds) || double.IsInfinity(elapsedSeconds) || elapsedSeconds <= 0.0)
+            {
+                return 0;
+            }
+            double fps = (fpsMilli >= 1000 && fpsMilli <= 60000) ? (fpsMilli / 1000.0) : 18.0;
+            double spd = (!float.IsNaN(speed) && !float.IsInfinity(speed) && speed > 0.05f) ? speed : 1.0;
+            long totalFrames = (long)Math.Floor(elapsedSeconds * fps * spd);
+            if (totalFrames <= 0) return 0;
+            return (int)(totalFrames % frameCount);
+        }
+
+        private static byte[] ReadExactBytes(Stream s, int count)
+        {
+            byte[] buf = new byte[count];
+            int read = 0;
+            while (read < count)
+            {
+                int n = s.Read(buf, read, count - read);
+                if (n <= 0) return null;
+                read += n;
+            }
+            return buf;
+        }
+
+        private static uint ReadUInt32LE(byte[] b, int offset)
+        {
+            return (uint)(b[offset] | (b[offset + 1] << 8) | (b[offset + 2] << 16) | (b[offset + 3] << 24));
+        }
+
+        private static ulong ReadUInt64LE(byte[] b, int offset)
+        {
+            uint lo = ReadUInt32LE(b, offset);
+            uint hi = ReadUInt32LE(b, offset + 4);
+            return ((ulong)hi << 32) | lo;
         }
     }
 }

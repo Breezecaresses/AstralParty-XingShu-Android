@@ -48,6 +48,7 @@ namespace XingShu.Tests
             Assert(!CustomLobbyBgPolicy.IsLikelyUnsupportedByUnityLoadImage(pngHeader), "PNG native");
             Assert(CustomLobbyBgPolicy.ClassifyExtension("movie.usm") == LobbyBgMediaKind.CriUsm, ".usm -> CriUsm");
             Assert(CustomLobbyBgPolicy.ClassifyExtension("vkv.bundle") == LobbyBgMediaKind.UnityBundle, ".bundle -> UnityBundle");
+            Assert(CustomLobbyBgPolicy.ClassifyExtension("loop.xsvid") == LobbyBgMediaKind.MotionStream, ".xsvid -> MotionStream");
             Assert(CustomLobbyBgPolicy.ClassifyExtension("readme.txt") == LobbyBgMediaKind.Unknown, ".txt -> Unknown");
             Assert(CustomLobbyBgPolicy.ClassifyExtension("") == LobbyBgMediaKind.Unknown, "empty -> Unknown");
             Assert(CustomLobbyBgPolicy.ClassifyExtension(null) == LobbyBgMediaKind.Unknown, "null -> Unknown");
@@ -56,6 +57,7 @@ namespace XingShu.Tests
             Assert(CustomLobbyBgPolicy.KindLabel(LobbyBgMediaKind.Image) == "静态图", "Image label");
             Assert(CustomLobbyBgPolicy.KindLabel(LobbyBgMediaKind.CriUsm) == "USM 动效", "CriUsm label");
             Assert(CustomLobbyBgPolicy.KindLabel(LobbyBgMediaKind.UnityBundle) == "VKVLoop 包", "Bundle label");
+            Assert(CustomLobbyBgPolicy.KindLabel(LobbyBgMediaKind.MotionStream) == "动态视频", "MotionStream label");
             Assert(CustomLobbyBgPolicy.KindLabel(LobbyBgMediaKind.Unknown) == "未知", "Unknown label");
         }
 
@@ -394,6 +396,69 @@ namespace XingShu.Tests
             Assert(Math.Abs(nanGuard - 1.25f) < 0.001f, "NaN/0 clock guard preserves user speed");
         }
 
+        private static void WriteU32(System.IO.MemoryStream ms, uint v)
+        {
+            ms.WriteByte((byte)(v & 0xff));
+            ms.WriteByte((byte)((v >> 8) & 0xff));
+            ms.WriteByte((byte)((v >> 16) & 0xff));
+            ms.WriteByte((byte)((v >> 24) & 0xff));
+        }
+
+        private static void WriteU64(System.IO.MemoryStream ms, ulong v)
+        {
+            WriteU32(ms, (uint)(v & 0xffffffffu));
+            WriteU32(ms, (uint)(v >> 32));
+        }
+
+        private static void TestXsvidIndexParserAndFrameClock()
+        {
+            byte[] f0 = new byte[24];
+            f0[0] = 0xFF; f0[1] = 0xD8; f0[23] = 0xD9;
+            byte[] f1 = new byte[32];
+            f1[0] = 0xFF; f1[1] = 0xD8; f1[31] = 0xD9;
+            byte[] aud = new byte[] { 1, 2, 3, 4, 5, 6 };
+
+            long f0Off = 40 + 2 * 12;
+            long f1Off = f0Off + f0.Length;
+            long audOff = f1Off + f1.Length;
+
+            using (var ms = new System.IO.MemoryStream())
+            {
+                ms.WriteByte((byte)'X'); ms.WriteByte((byte)'S'); ms.WriteByte((byte)'V'); ms.WriteByte((byte)'D');
+                WriteU32(ms, 1u);
+                WriteU32(ms, 960u);
+                WriteU32(ms, 540u);
+                WriteU32(ms, 18000u);
+                WriteU32(ms, 2u);
+                WriteU64(ms, (ulong)audOff);
+                WriteU32(ms, (uint)aud.Length);
+                WriteU32(ms, 0u);
+                WriteU64(ms, (ulong)f0Off); WriteU32(ms, (uint)f0.Length);
+                WriteU64(ms, (ulong)f1Off); WriteU32(ms, (uint)f1.Length);
+                ms.Write(f0, 0, f0.Length);
+                ms.Write(f1, 0, f1.Length);
+                ms.Write(aud, 0, aud.Length);
+
+                CustomLobbyBgPolicy.XsvidHeader hdr;
+                string err;
+                Assert(CustomLobbyBgPolicy.TryParseXsvidIndex(ms, out hdr, out err), "valid xsvid parses: " + err);
+                Assert(hdr.Width == 960 && hdr.Height == 540 && hdr.FpsMilli == 18000, "xsvid dimensions & fps");
+                Assert(hdr.FrameCount == 2 && hdr.Frames[0].Offset == f0Off && hdr.Frames[1].Length == f1.Length, "xsvid frame table");
+                Assert(hdr.AudioOffset == audOff && hdr.AudioLength == aud.Length, "xsvid audio bounds");
+            }
+
+            using (var bad = new System.IO.MemoryStream(new byte[] { 0, 1, 2, 3, 4, 5 }))
+            {
+                CustomLobbyBgPolicy.XsvidHeader hdr;
+                string err;
+                Assert(!CustomLobbyBgPolicy.TryParseXsvidIndex(bad, out hdr, out err), "short stream rejected");
+            }
+
+            Assert(CustomLobbyBgPolicy.ComputeMotionStreamFrameIndex(0.0, 20000, 1.0f, 10) == 0, "t=0 -> frame 0");
+            Assert(CustomLobbyBgPolicy.ComputeMotionStreamFrameIndex(0.25, 20000, 1.0f, 10) == 5, "t=0.25@20fps -> frame 5");
+            Assert(CustomLobbyBgPolicy.ComputeMotionStreamFrameIndex(0.55, 20000, 1.0f, 10) == 1, "loop wraps -> frame 1");
+        }
+
         public static int Main()
         {
             TestClassifyAndKindLabel();
@@ -408,6 +473,7 @@ namespace XingShu.Tests
             TestPlaybackPositionExtrapolation();
             TestSidecarConfigJsonRoundtrip();
             TestNativeClockSpeedCompensation();
+            TestXsvidIndexParserAndFrameClock();
             Console.WriteLine("CustomLobbyBgTests PASS");
             return 0;
         }

@@ -59,6 +59,15 @@ public class CustomizeEngineTest {
         Map<String, Object> delCfg = MiniJson.objectField(delMap, "config");
         assertEquals(Boolean.FALSE, delCfg.get("enabled"));
         assertEquals("", MiniJson.stringField(delCfg, "selectedFile"));
+
+        Map<String, Object> xsvidImport = MiniJson.parseObject(engine.importCustomizeFileForRoot(
+                filesRoot,
+                "lobbybg",
+                "lobby_motion.xsvid",
+                new ByteArrayInputStream("XSVD_TEST_STREAM".getBytes(StandardCharsets.UTF_8))));
+        assertEquals(Boolean.TRUE, xsvidImport.get("ok"));
+        assertEquals("video", MiniJson.stringField(xsvidImport, "mediaKind"));
+        assertTrue(new File(filesRoot, "lobbybg/lobby_motion.xsvid").isFile());
     }
 
     @Test

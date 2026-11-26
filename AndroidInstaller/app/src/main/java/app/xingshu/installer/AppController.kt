@@ -254,6 +254,7 @@ internal class AppController(private val activity: Activity) {
     var customizeSection by mutableStateOf("lobbybg")
     var customizeLoading by mutableStateOf(false)
     var customizeBusy by mutableStateOf(false)
+    var customizeProgressText by mutableStateOf("")
     var lobbyBgDir by mutableStateOf("")
     var lobbyBgConfig by mutableStateOf(LobbyBgConfigState())
     val lobbyBgFiles = mutableStateListOf<LobbyBgMediaEntry>()
@@ -2030,8 +2031,10 @@ internal class AppController(private val activity: Activity) {
         }
         val pkg = selectedPackageName
         customizeBusy = true
+        customizeProgressText = if (isVideo) "正在读取视频文件…" else "正在读取图片文件…"
         worker.execute {
             var tempFile: File? = null
+            var xsvidTempFile: File? = null
             try {
                 val rawName = resolveDisplayName(uri) ?: if (isVideo) "custom_lobby_bg.mp4" else "custom_lobby_bg.png"
                 val safeName = sanitizeLocalImportFileName(rawName, if (isVideo) "custom_lobby_bg.mp4" else "custom_lobby_bg.png")
@@ -2039,37 +2042,70 @@ internal class AppController(private val activity: Activity) {
                 tempFile = File(cacheRoot, "import_lobby_${System.currentTimeMillis()}.bin")
                 copyUriToFile(uri, tempFile, 300L * 1024L * 1024L)
 
-                val previewBmp = generateAndSaveMediaPreview(tempFile, safeName)
-                val importJson = executeCustomizeImportBlocking(pkg, "lobbybg", safeName, tempFile)
+                val needXsvidTranscode = AndroidLobbyVideoTranscoder.isTranscodableVideoFile(safeName)
+                val targetFileName = if (needXsvidTranscode) {
+                    replaceFileExtension(safeName, ".xsvid")
+                } else {
+                    safeName
+                }
+
+                val previewBmp = generateAndSaveMediaPreview(tempFile, safeName, targetFileName)
+
+                val uploadFile: File = if (needXsvidTranscode) {
+                    xsvidTempFile = File(cacheRoot, "transcode_lobby_${System.currentTimeMillis()}.xsvid")
+                    AndroidLobbyVideoTranscoder.transcodeVideoToXsvid(tempFile, xsvidTempFile) { pct, msg ->
+                        activity.runOnUiThread {
+                            if (!disposed) customizeProgressText = "$msg ($pct%)"
+                        }
+                    }
+                    xsvidTempFile
+                } else {
+                    tempFile
+                }
+
+                activity.runOnUiThread {
+                    if (!disposed) customizeProgressText = "正在写入游戏目录 lobbybg/…"
+                }
+                val importJson = executeCustomizeImportBlocking(pkg, "lobbybg", targetFileName, uploadFile)
                 val parsedImport = MiniJson.parseObject(importJson)
                 val err = MiniJson.stringField(parsedImport, "error")
                 if (err.isNotEmpty()) throw IOException(err)
 
-                val importedName = MiniJson.stringField(parsedImport, "fileName").ifEmpty { safeName }
+                val importedName = MiniJson.stringField(parsedImport, "fileName").ifEmpty { targetFileName }
                 val nextCfg = lobbyBgConfig.copy(enabled = true, selectedFile = importedName)
                 val saveResp = executeCustomizeOpBlocking(pkg, "lobbybg_save", lobbyBgConfigToJson(nextCfg))
 
                 activity.runOnUiThread {
                     if (disposed) return@runOnUiThread
                     customizeBusy = false
+                    customizeProgressText = ""
                     if (previewBmp != null) lobbyBgPreviews[importedName] = previewBmp
                     val saveErr = applyLobbyBgStateJson(saveResp)
                     if (saveErr != null) {
                         toast(saveErr)
                     } else {
-                        toast("已导入并启用大厅背景：$importedName")
+                        val suffix = if (needXsvidTranscode) "（已硬件转码为手机动态包）" else ""
+                        toast("已导入并启用大厅背景：$importedName$suffix")
                     }
                 }
             } catch (e: Exception) {
                 activity.runOnUiThread {
                     if (disposed) return@runOnUiThread
                     customizeBusy = false
+                    customizeProgressText = ""
                     toast("导入大厅背景失败：${e.message}")
                 }
             } finally {
                 tempFile?.delete()
+                xsvidTempFile?.delete()
             }
         }
+    }
+
+    private fun replaceFileExtension(name: String, newExt: String): String {
+        val dot = name.lastIndexOf('.')
+        val stem = if (dot > 0) name.substring(0, dot) else name
+        return (stem.take(150).ifEmpty { "custom_lobby_bg" }) + newExt
     }
 
     fun saveCustomizeTuning(next: CustomizeTuningState, successToast: String? = null) {
@@ -2352,9 +2388,13 @@ internal class AppController(private val activity: Activity) {
         } catch (_: Exception) { }
     }
 
-    private fun generateAndSaveMediaPreview(mediaFile: File, fileName: String): ImageBitmap? {
+    private fun generateAndSaveMediaPreview(
+        mediaFile: File,
+        sourceNameForDetect: String,
+        previewKeyName: String = sourceNameForDetect,
+    ): ImageBitmap? {
         return try {
-            val lower = fileName.lowercase(Locale.ROOT)
+            val lower = sourceNameForDetect.lowercase(Locale.ROOT)
             val rawBmp: Bitmap? = if (lower.endsWith(".mp4") || lower.endsWith(".mov") || lower.endsWith(".webm") || lower.endsWith(".mkv") || lower.endsWith(".avi") || lower.endsWith(".m4v")) {
                 val mmr = android.media.MediaMetadataRetriever()
                 try {
@@ -2387,7 +2427,7 @@ internal class AppController(private val activity: Activity) {
             } else {
                 rawBmp
             }
-            val dest = lobbyBgPreviewFile(fileName)
+            val dest = lobbyBgPreviewFile(previewKeyName)
             FileOutputStream(dest).use { out ->
                 finalBmp.compress(Bitmap.CompressFormat.JPEG, 85, out)
                 out.flush()

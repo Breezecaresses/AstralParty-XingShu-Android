@@ -138,6 +138,13 @@ internal fun CustomizeScreen(controller: AppController) {
 
         if (controller.customizeLoading || controller.customizeBusy) {
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            if (controller.customizeProgressText.isNotBlank()) {
+                Text(
+                    text = controller.customizeProgressText,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
         }
 
         when (controller.customizeSection) {
@@ -239,7 +246,7 @@ private fun LobbyBgSection(controller: AppController) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text("自定义 · 主页背景（已内置）", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold))
                     Text(
-                        text = "直接读写游戏目录 lobbybg/xingshu_lobby_bg.json，与游戏内 F1 / 悬浮球菜单双向同步。",
+                        text = "直接读写游戏目录 lobbybg/；手机端选择 MP4/MOV/WebM 时将自动硬件转码为手机专享 .xsvid 动态背景（无需 Unity VideoPlayer，进大厅流畅播放）。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
