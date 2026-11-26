@@ -2051,9 +2051,10 @@ internal class AppController(private val activity: Activity) {
 
                 val previewBmp = generateAndSaveMediaPreview(tempFile, safeName, targetFileName)
 
+                var transcodeResult: AndroidLobbyVideoTranscoder.TranscodeResult? = null
                 val uploadFile: File = if (needXsvidTranscode) {
                     xsvidTempFile = File(cacheRoot, "transcode_lobby_${System.currentTimeMillis()}.xsvid")
-                    AndroidLobbyVideoTranscoder.transcodeVideoToXsvid(tempFile, xsvidTempFile) { pct, msg ->
+                    transcodeResult = AndroidLobbyVideoTranscoder.transcodeVideoToXsvid(tempFile, xsvidTempFile) { pct, msg ->
                         activity.runOnUiThread {
                             if (!disposed) customizeProgressText = "$msg ($pct%)"
                         }
@@ -2084,7 +2085,13 @@ internal class AppController(private val activity: Activity) {
                     if (saveErr != null) {
                         toast(saveErr)
                     } else {
-                        val suffix = if (needXsvidTranscode) "（已硬件转码为手机动态包）" else ""
+                        val suffix = if (transcodeResult != null) {
+                            String.format(Locale.US, "（已转码完整 %.1f 秒 · %d 帧）", transcodeResult.durationSeconds, transcodeResult.frameCount)
+                        } else if (needXsvidTranscode) {
+                            "（已硬件转码为手机动态包）"
+                        } else {
+                            ""
+                        }
                         toast("已导入并启用大厅背景：$importedName$suffix")
                     }
                 }

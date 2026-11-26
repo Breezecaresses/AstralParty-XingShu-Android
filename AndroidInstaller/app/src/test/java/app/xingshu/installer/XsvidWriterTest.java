@@ -8,11 +8,13 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.Arrays;
 
 public class XsvidWriterTest {
@@ -31,7 +33,7 @@ public class XsvidWriterTest {
         File audio = tmp.newFile("sample.m4a");
         byte[] audioBytes = new byte[16];
         for (int i = 0; i < audioBytes.length; i++) audioBytes[i] = (byte) (i + 10);
-        java.nio.file.Files.write(audio.toPath(), audioBytes);
+        Files.write(audio.toPath(), audioBytes);
 
         File out = new File(tmp.getRoot(), "bg.xsvid");
         XsvidWriter.INSTANCE.writePackage(out, 960, 540, 18000, Arrays.asList(f0, f1, f2), audio);
@@ -76,5 +78,72 @@ public class XsvidWriterTest {
             raf.readFully(gotAud);
             assertArrayEquals(audioBytes, gotAud);
         }
+    }
+
+    @Test
+    public void rawStreamWriterMatchesInMemoryWriterByteForByte() throws Exception {
+        byte[] f0 = new byte[22];
+        f0[0] = (byte) 0xFF; f0[1] = (byte) 0xD8; f0[21] = (byte) 0xD9;
+        byte[] f1 = new byte[48];
+        f1[0] = (byte) 0xFF; f1[1] = (byte) 0xD8; f1[47] = (byte) 0xD9;
+        byte[] f2 = new byte[30];
+        f2[0] = (byte) 0xFF; f2[1] = (byte) 0xD8; f2[29] = (byte) 0xD9;
+
+        File audio = tmp.newFile("stream_audio.m4a");
+        byte[] audioBytes = new byte[64];
+        for (int i = 0; i < audioBytes.length; i++) audioBytes[i] = (byte) (i * 3 + 1);
+        Files.write(audio.toPath(), audioBytes);
+
+        File rawFrames = tmp.newFile("frames.bin");
+        ByteArrayOutputStream rawBaos = new ByteArrayOutputStream();
+        rawBaos.write(f0);
+        rawBaos.write(f1);
+        rawBaos.write(f2);
+        Files.write(rawFrames.toPath(), rawBaos.toByteArray());
+
+        File memOut = new File(tmp.getRoot(), "mem.xsvid");
+        File streamOut = new File(tmp.getRoot(), "stream.xsvid");
+        XsvidWriter.INSTANCE.writePackage(memOut, 854, 480, 15000, Arrays.asList(f0, f1, f2), audio);
+        XsvidWriter.INSTANCE.writePackageFromRawStream(
+            streamOut,
+            854,
+            480,
+            15000,
+            rawFrames,
+            new int[] { f0.length, f1.length, f2.length },
+            audio
+        );
+
+        assertArrayEquals(Files.readAllBytes(memOut.toPath()), Files.readAllBytes(streamOut.toPath()));
+    }
+
+    @Test
+    public void adaptiveProfileCoversFullFiveMinutesWithinRuntimeFrameCap() {
+        double[] durations = new double[] { 15.0, 45.0, 90.0, 180.0, 300.0 };
+        for (double sec : durations) {
+            XsvidWriter.TranscodeProfile hw = XsvidWriter.INSTANCE.selectAdaptiveProfile(sec, false);
+            assertTrue(hw.getMaxFrames() <= 3600);
+            assertTrue(sec * hw.getTargetFps() <= 3550.0);
+
+            XsvidWriter.TranscodeProfile fb = XsvidWriter.INSTANCE.selectAdaptiveProfile(sec, true);
+            assertTrue(fb.getMaxFrames() <= 3600);
+            assertTrue(sec * fb.getTargetFps() <= 3550.0);
+        }
+
+        XsvidWriter.TranscodeProfile shortHw = XsvidWriter.INSTANCE.selectAdaptiveProfile(30.0, false);
+        assertEquals(960, shortHw.getMaxWidth());
+        assertEquals(18.0, shortHw.getTargetFps(), 0.01);
+
+        XsvidWriter.TranscodeProfile fiveMinHw = XsvidWriter.INSTANCE.selectAdaptiveProfile(300.0, false);
+        assertEquals(720, fiveMinHw.getMaxWidth());
+        assertTrue(fiveMinHw.getTargetFps() <= 11.7);
+    }
+
+    @Test
+    public void computesCalibratedFpsMilliFromActualDuration() {
+        assertEquals(12000, XsvidWriter.INSTANCE.computeCalibratedFpsMilli(240, 20_000_000L, 18000));
+        assertEquals(15000, XsvidWriter.INSTANCE.computeCalibratedFpsMilli(900, 60_000_000L, 18000));
+        assertEquals(18000, XsvidWriter.INSTANCE.computeCalibratedFpsMilli(0, 20_000_000L, 18000));
+        assertEquals(18000, XsvidWriter.INSTANCE.computeCalibratedFpsMilli(10, 50_000L, 18000));
     }
 }
