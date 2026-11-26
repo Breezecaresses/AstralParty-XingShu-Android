@@ -12,6 +12,7 @@
         <package android:name="com.feimo.jxpd.nearme.gamecenter" />
         <package android:name="com.feimo.astralparty.vivo" />
         <package android:name="com.feimo.jxpd.vivo" />
+        <package android:name="com.jxpd.feimo.m4399" />
         <package android:name="com.feimo.jxpd.m4399" />
         <package android:name="com.feimo.astralparty.m4399" />
         <package android:name="com.feimo.jxpd.meizu" />

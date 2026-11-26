@@ -15,6 +15,7 @@ public class GamePackageCatalogTest {
             + "package:com.feimo.astralparty\n"
             + "package:com.feimo.jxpd.mi\n"
             + "package:com.feimo.astralparty.bilibili\n"
+            + "package:com.jxpd.feimo.m4399\n"
             + "package:com.tencent.tmgp.astralparty\n";
 
         List<String> found = GamePackageCatalog.parseThirdPartyPackages(pmOut);
@@ -22,10 +23,12 @@ public class GamePackageCatalogTest {
             "com.feimo.astralparty",
             "com.feimo.jxpd.mi",
             "com.feimo.astralparty.bilibili",
+            "com.jxpd.feimo.m4399",
             "com.tencent.tmgp.astralparty"
         ), found);
         assertEquals("XIAOMI", GamePackageCatalog.classifyPackage("com.feimo.jxpd.mi").platform);
         assertEquals("BILIBILI", GamePackageCatalog.classifyPackage("com.feimo.astralparty.bilibili").platform);
+        assertEquals("M4399", GamePackageCatalog.classifyPackage("com.jxpd.feimo.m4399").platform);
         assertEquals("YYB", GamePackageCatalog.classifyPackage("com.tencent.tmgp.astralparty").platform);
     }
 

@@ -536,6 +536,7 @@ internal class AppController(private val activity: Activity) {
             "com.feimo.jxpd.nearme.gamecenter",
             "com.feimo.astralparty.vivo",
             "com.feimo.jxpd.vivo",
+            "com.jxpd.feimo.m4399",
             "com.feimo.jxpd.m4399",
             "com.feimo.astralparty.m4399",
             "com.feimo.jxpd.meizu",

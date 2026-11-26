@@ -170,4 +170,25 @@ public class BnSdkTokenExtractorTest {
         assertEquals(1, rawParsed.size());
         assertEquals("XIAOMI", rawParsed.get(0).platform);
     }
+
+    @Test
+    public void recognizesM4399ChannelAndInfersRealPackageAppId() throws Exception {
+        String m4399Tok = "m4399LiveToken1234567890abcdefghijklmnopqrstuvwxyzABCD";
+        assertEquals("110001941", BnSdkTokenExtractor.inferAppIdFromPackage("package=com.jxpd.feimo.m4399"));
+        assertEquals("110001941", BnSdkTokenExtractor.appIdForPackage("com.jxpd.feimo.m4399"));
+
+        BnSdkTokenExtractor.ChannelToken classified = BnSdkTokenExtractor.classifyApp("110001941", "bot4 (UID 3111833)", m4399Tok);
+        assertEquals("M4399", classified.platform);
+        assertEquals("110001941", classified.appId);
+        assertEquals("4399渠道", classified.label);
+        assertTrue(classified.nativeSupported);
+        assertFalse(classified.displaySummary().contains(m4399Tok));
+        assertFalse(classified.displaySummary().contains("趴绑定"));
+
+        String json = "{\"tokens\":[{\"platform\":\"M4399\",\"appId\":\"110001941\",\"label\":\"4399渠道\",\"userId\":\"bot4 (UID 3111833)\",\"sdkToken\":\"" + m4399Tok + "\",\"nativeSupported\":true}]}";
+        List<BnSdkTokenExtractor.ChannelToken> parsed = BnSdkTokenExtractor.parseTokensOutput(json, "110001941");
+        assertEquals(1, parsed.size());
+        assertEquals("M4399", parsed.get(0).platform);
+        assertTrue(parsed.get(0).nativeSupported);
+    }
 }

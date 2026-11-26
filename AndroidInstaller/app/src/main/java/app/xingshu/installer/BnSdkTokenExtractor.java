@@ -103,6 +103,8 @@ final class BnSdkTokenExtractor {
                 return new ChannelToken("TAPTAP", id, "TapTap", userId, sdkToken, true);
             case "110001957":
                 return new ChannelToken("BILIBILI", id, "哔哩哔哩 (B站)", userId, sdkToken, true);
+            case "110001941":
+                return new ChannelToken("M4399", id, "4399渠道", userId, sdkToken, true);
             case "110001949":
                 return new ChannelToken("WEGAME", id, "WeGame", userId, sdkToken, true);
             case "110001933":
@@ -118,6 +120,7 @@ final class BnSdkTokenExtractor {
         if (text == null || text.isEmpty()) return "";
         if (text.contains("com.feimo.jxpd.mi")) return "110001934";
         if (text.contains("com.feimo.astralparty.bilibili") || text.contains("com.feimo.jxpd.bili")) return "110001957";
+        if (text.contains("com.jxpd.feimo.m4399") || text.contains("com.feimo.jxpd.m4399") || text.contains("com.feimo.astralparty.m4399")) return "110001941";
         if (text.contains("com.feimo.astralparty")) return "110001937";
         return "";
     }
@@ -131,6 +134,8 @@ final class BnSdkTokenExtractor {
                 return "110001934";
             case "BILIBILI":
                 return "110001957";
+            case "M4399":
+                return "110001941";
             case "TAPTAP":
                 return "110001937";
             default:
