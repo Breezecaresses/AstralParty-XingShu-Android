@@ -396,6 +396,10 @@ internal class AppController(private val activity: Activity) {
     }
 
     fun onResume() {
+        if (!useShizuku && adbConnected && localAdb?.connected() == false) {
+            adbConnected = false
+            startMdnsDiscovery()
+        }
         if (prefs.getBoolean("waitingInstallPermission", false)) {
             prefs.edit().putBoolean("waitingInstallPermission", false).apply()
             requestInstallPendingUpdateApk()
@@ -476,12 +480,46 @@ internal class AppController(private val activity: Activity) {
         statusText = msg.lineSequence().firstOrNull() ?: msg
     }
 
+    private val localAdbReconnectLock = Any()
+
     private fun requireLocalAdb(): LocalAdbInstaller {
         val current = localAdb
         if (current != null) return current
         val created = LocalAdbInstaller(appContext)
         localAdb = created
         return created
+    }
+
+    private fun ensureLocalAdbReadyBlocking(): LocalAdbInstaller {
+        synchronized(localAdbReconnectLock) {
+            val adb = requireLocalAdb()
+            if (adb.connected()) return adb
+            val port = listOf(
+                discoveredConnectPort,
+                LocalAdbInstaller.tryDiscoverSystemAdbPort(),
+                connectionPortInput.trim().toIntOrNull() ?: -1,
+                prefs.getString("connectionPort", "")?.toIntOrNull() ?: -1,
+            ).firstOrNull { it >= 1024 } ?: -1
+            val host = discoveredConnectHost ?: connectedHost.ifBlank { null }
+            if (port >= 1024) {
+                try {
+                    adb.connect(host, port)
+                    adb.syncCoreSpec(coreSpec)
+                    activity.runOnUiThread {
+                        if (!disposed) {
+                            adbConnected = true
+                            connectedHost = adb.connectedHost()
+                        }
+                    }
+                    return adb
+                } catch (_: Exception) {
+                }
+            }
+            activity.runOnUiThread {
+                if (!disposed) adbConnected = false
+            }
+            throw IOException("无线调试连接已断开，请确认系统「无线调试」开启后重新连接。")
+        }
     }
 
     private fun scanOfflinePackages() {
@@ -495,7 +533,13 @@ internal class AppController(private val activity: Activity) {
             "com.feimo.astralparty.huawei",
             "com.feimo.jxpd.huawei",
             "com.feimo.astralparty.nearme.gamecenter",
+            "com.feimo.jxpd.nearme.gamecenter",
             "com.feimo.astralparty.vivo",
+            "com.feimo.jxpd.vivo",
+            "com.feimo.jxpd.m4399",
+            "com.feimo.astralparty.m4399",
+            "com.feimo.jxpd.meizu",
+            "com.feimo.jxpd.honor",
             "com.tencent.tmgp.astralparty",
         )
         for (pkg in knownCandidates) {
@@ -543,7 +587,7 @@ internal class AppController(private val activity: Activity) {
                                 val res = if (useShizuku) {
                                     remoteBinder?.writeGameHandoff(pkg, handoffJson)
                                 } else {
-                                    requireLocalAdb().writeGameHandoff(pkg, handoffJson)
+                                    ensureLocalAdbReadyBlocking().writeGameHandoff(pkg, handoffJson)
                                 }
                                 if (res == "OK") {
                                     LocalHandoffBridge.publish(handoff.token, handoff.uid)
@@ -565,7 +609,7 @@ internal class AppController(private val activity: Activity) {
         if (isPrivilegeReady()) {
             worker.execute {
                 val res = try {
-                    if (useShizuku) remoteBinder!!.launchGame(pkg) else requireLocalAdb().launchGame(pkg)
+                    if (useShizuku) remoteBinder!!.launchGame(pkg) else ensureLocalAdbReadyBlocking().launchGame(pkg)
                 } catch (e: Exception) {
                     "启动失败：${e.message}"
                 }
@@ -843,7 +887,7 @@ internal class AppController(private val activity: Activity) {
                 lastShizukuSpecJson = canonical
             }
         } else {
-            requireLocalAdb().syncCoreSpec(spec)
+            ensureLocalAdbReadyBlocking().syncCoreSpec(spec)
         }
     }
 
@@ -865,8 +909,8 @@ internal class AppController(private val activity: Activity) {
             try {
                 val spec = resolveCoreSpecBlocking(forceRefresh = true)
                 syncCoreSpecToPrivilegeBlocking(spec)
-                val scanJson = if (useShizuku) remoteBinder!!.scanPackages() else requireLocalAdb().scanPackages()
-                val inspectOut = if (useShizuku) remoteBinder!!.inspect(pkg) else requireLocalAdb().inspect(pkg)
+                val scanJson = if (useShizuku) remoteBinder!!.scanPackages() else ensureLocalAdbReadyBlocking().scanPackages()
+                val inspectOut = if (useShizuku) remoteBinder!!.inspect(pkg) else ensureLocalAdbReadyBlocking().inspect(pkg)
                 activity.runOnUiThread {
                     if (disposed) return@runOnUiThread
                     busy = false
@@ -892,7 +936,7 @@ internal class AppController(private val activity: Activity) {
             val out = try {
                 val spec = resolveCoreSpecBlocking(forceRefresh = true)
                 syncCoreSpecToPrivilegeBlocking(spec)
-                if (useShizuku) remoteBinder!!.inspect(pkg) else requireLocalAdb().inspect(pkg)
+                if (useShizuku) remoteBinder!!.inspect(pkg) else ensureLocalAdbReadyBlocking().inspect(pkg)
             } catch (e: Exception) {
                 "检查未通过：${e.message}"
             }
@@ -919,7 +963,7 @@ internal class AppController(private val activity: Activity) {
                 val spec = resolveCoreSpecBlocking(forceRefresh = true)
                 syncCoreSpecToPrivilegeBlocking(spec)
                 if (!restore && conflictHash == null) {
-                    val preflight = if (useShizuku) remoteBinder!!.inspect(pkg) else requireLocalAdb().inspect(pkg)
+                    val preflight = if (useShizuku) remoteBinder!!.inspect(pkg) else ensureLocalAdbReadyBlocking().inspect(pkg)
                     if (!preflight.startsWith("游戏版本匹配") || preflight.contains("游戏仍在运行")) {
                         activity.runOnUiThread {
                             busy = false
@@ -943,7 +987,7 @@ internal class AppController(private val activity: Activity) {
                 }
 
                 val out = applyCorePluginBlocking(pkg, restore, conflictHash, spec)
-                val scanJson = if (useShizuku) remoteBinder!!.scanPackages() else requireLocalAdb().scanPackages()
+                val scanJson = if (useShizuku) remoteBinder!!.scanPackages() else ensureLocalAdbReadyBlocking().scanPackages()
                 activity.runOnUiThread {
                     if (disposed) return@runOnUiThread
                     busy = false
@@ -1014,7 +1058,7 @@ internal class AppController(private val activity: Activity) {
             )
         }
         if (!useShizuku) {
-            return requireLocalAdb().apply(pkg, restore, conflictHash, candidateFile, vanillaFile)
+            return ensureLocalAdbReadyBlocking().apply(pkg, restore, conflictHash, candidateFile, vanillaFile)
         }
         val binder = remoteBinder!!
         val pfdCandidate = candidateFile?.let { ParcelFileDescriptor.open(it, ParcelFileDescriptor.MODE_READ_ONLY) }
@@ -1034,7 +1078,7 @@ internal class AppController(private val activity: Activity) {
         val pkg = selectedPackageName
         worker.execute {
             try {
-                val json = if (useShizuku) remoteBinder!!.listInstalledMods(pkg) else requireLocalAdb().listInstalledMods(pkg)
+                val json = if (useShizuku) remoteBinder!!.listInstalledMods(pkg) else ensureLocalAdbReadyBlocking().listInstalledMods(pkg)
                 activity.runOnUiThread {
                     if (!disposed) applyListedMods(json)
                 }
@@ -1057,7 +1101,7 @@ internal class AppController(private val activity: Activity) {
                 val respJson = if (useShizuku) {
                     remoteBinder!!.setOfficialModules(pkg, id, enable, false)
                 } else {
-                    requireLocalAdb().setOfficialModules(pkg, id, enable, false)
+                    ensureLocalAdbReadyBlocking().setOfficialModules(pkg, id, enable, false)
                 }
                 val parsed = MiniJson.parseObject(respJson)
                 activity.runOnUiThread {
@@ -1100,7 +1144,7 @@ internal class AppController(private val activity: Activity) {
                 if (includeCore && (currentState != "installed" || spec.runtimeVersion != prevRuntime)) {
                     val out = applyCorePluginBlocking(pkg, restore = false, conflictHash = null, spec = spec)
                     if (out.startsWith("未完成") || out.startsWith("检查未通过") || out.contains("同位置覆盖冲突")) {
-                        val scanJson = if (useShizuku) remoteBinder!!.scanPackages() else requireLocalAdb().scanPackages()
+                        val scanJson = if (useShizuku) remoteBinder!!.scanPackages() else ensureLocalAdbReadyBlocking().scanPackages()
                         activity.runOnUiThread {
                             batchModsBusy = false
                             runtimeProgress = RuntimeProgressState()
@@ -1115,10 +1159,10 @@ internal class AppController(private val activity: Activity) {
                 val respJson = if (useShizuku) {
                     remoteBinder!!.setOfficialModules(pkg, csv, true, false)
                 } else {
-                    requireLocalAdb().setOfficialModules(pkg, csv, true, false)
+                    ensureLocalAdbReadyBlocking().setOfficialModules(pkg, csv, true, false)
                 }
                 val parsed = MiniJson.parseObject(respJson)
-                val scanJson = if (useShizuku) remoteBinder!!.scanPackages() else requireLocalAdb().scanPackages()
+                val scanJson = if (useShizuku) remoteBinder!!.scanPackages() else ensureLocalAdbReadyBlocking().scanPackages()
                 activity.runOnUiThread {
                     batchModsBusy = false
                     runtimeProgress = RuntimeProgressState()
@@ -1162,7 +1206,7 @@ internal class AppController(private val activity: Activity) {
                 val respJson = if (useShizuku) {
                     remoteBinder!!.setOfficialModules(pkg, "all", false, true)
                 } else {
-                    requireLocalAdb().setOfficialModules(pkg, "all", false, true)
+                    ensureLocalAdbReadyBlocking().setOfficialModules(pkg, "all", false, true)
                 }
                 val parsed = MiniJson.parseObject(respJson)
                 activity.runOnUiThread {
@@ -1198,7 +1242,7 @@ internal class AppController(private val activity: Activity) {
                 val respJson = if (useShizuku) {
                     remoteBinder!!.setOfficialModules(pkg, "legacy", false, true)
                 } else {
-                    requireLocalAdb().setOfficialModules(pkg, "legacy", false, true)
+                    ensureLocalAdbReadyBlocking().setOfficialModules(pkg, "legacy", false, true)
                 }
                 val parsed = MiniJson.parseObject(respJson)
                 activity.runOnUiThread {
@@ -1235,10 +1279,10 @@ internal class AppController(private val activity: Activity) {
                 val respJson = if (useShizuku) {
                     remoteBinder!!.removeModPack(pkg, entry.id)
                 } else {
-                    requireLocalAdb().removeModPack(pkg, entry.id)
+                    ensureLocalAdbReadyBlocking().removeModPack(pkg, entry.id)
                 }
                 val parsed = MiniJson.parseObject(respJson)
-                val listJson = if (useShizuku) remoteBinder!!.listInstalledMods(pkg) else requireLocalAdb().listInstalledMods(pkg)
+                val listJson = if (useShizuku) remoteBinder!!.listInstalledMods(pkg) else ensureLocalAdbReadyBlocking().listInstalledMods(pkg)
                 activity.runOnUiThread {
                     modTaskBusy = false
                     if (disposed) return@runOnUiThread
@@ -1319,10 +1363,10 @@ internal class AppController(private val activity: Activity) {
                         remoteBinder!!.installModPack(pkg, metaJson, pfd)
                     }
                 } else {
-                    requireLocalAdb().installModPack(pkg, metaJson, tempFile)
+                    ensureLocalAdbReadyBlocking().installModPack(pkg, metaJson, tempFile)
                 }
                 val parsed = MiniJson.parseObject(respJson)
-                val listJson = if (useShizuku) remoteBinder!!.listInstalledMods(pkg) else requireLocalAdb().listInstalledMods(pkg)
+                val listJson = if (useShizuku) remoteBinder!!.listInstalledMods(pkg) else ensureLocalAdbReadyBlocking().listInstalledMods(pkg)
                 activity.runOnUiThread {
                     modTaskBusy = false
                     if (disposed) return@runOnUiThread
@@ -1768,11 +1812,11 @@ internal class AppController(private val activity: Activity) {
                         remoteBinder!!.installModPack(pkg, metaJson, pfd)
                     }
                 } else {
-                    requireLocalAdb().installModPack(pkg, metaJson, zipFile)
+                    ensureLocalAdbReadyBlocking().installModPack(pkg, metaJson, zipFile)
                 }
 
                 val parsed = MiniJson.parseObject(respJson)
-                val listJson = if (useShizuku) remoteBinder!!.listInstalledMods(pkg) else requireLocalAdb().listInstalledMods(pkg)
+                val listJson = if (useShizuku) remoteBinder!!.listInstalledMods(pkg) else ensureLocalAdbReadyBlocking().listInstalledMods(pkg)
                 activity.runOnUiThread {
                     modTaskBusy = false
                     modProgress = ModProgressState()
@@ -2203,7 +2247,7 @@ internal class AppController(private val activity: Activity) {
             val binder = remoteBinder ?: throw IOException("Shizuku 服务未连接")
             binder.manageCustomize(pkg, op, payloadJson)
         } else {
-            requireLocalAdb().manageCustomize(pkg, op, payloadJson)
+            ensureLocalAdbReadyBlocking().manageCustomize(pkg, op, payloadJson)
         }
     }
 
@@ -2217,7 +2261,7 @@ internal class AppController(private val activity: Activity) {
                 try { pfd.close() } catch (_: Exception) {}
             }
         } else {
-            requireLocalAdb().importCustomizeFile(pkg, targetKind, fileName, staged)
+            ensureLocalAdbReadyBlocking().importCustomizeFile(pkg, targetKind, fileName, staged)
         }
     }
 
@@ -2524,6 +2568,9 @@ internal class AppController(private val activity: Activity) {
                     if (!disposed) pendingQqRequester = requester
                 }
             }
+            if (boundSession == null && isPrivilegeReady() && detectedTokens.isEmpty()) {
+                scanChannelTokens()
+            }
         } catch (_: Exception) {
         }
     }
@@ -2649,17 +2696,21 @@ internal class AppController(private val activity: Activity) {
         authStatusText = "正在扫描手机游戏渠道登录票据…"
         authWorker.execute {
             try {
-                val raw = if (useShizuku) remoteBinder!!.readChannelLogcat() else requireLocalAdb().readChannelLogcat()
-                val tokens = BnSdkTokenExtractor.extractFromLogcat(raw, BnSdkTokenExtractor.appIdForPackage(selectedPackageName))
+                val raw = if (useShizuku) remoteBinder!!.readChannelLogcat() else ensureLocalAdbReadyBlocking().readChannelLogcat()
+                val tokens = BnSdkTokenExtractor.parseTokensOutput(raw, BnSdkTokenExtractor.appIdForPackage(selectedPackageName))
                 activity.runOnUiThread {
                     authBusy = false
                     detectedTokens.clear()
                     detectedTokens.addAll(tokens)
-                    selectedTokenIndex = 0
-                    authStatusText = if (tokens.isEmpty()) {
-                        "暂未发现有效的 BN_DEBUG 登录票据；请先启动渠道游戏登录进大厅一次后再扫描。"
-                    } else {
-                        "已发现 ${tokens.size} 条渠道票据，可选中后登录星枢或绑定 QQ。"
+                    val firstSupported = tokens.indexOfFirst { it.nativeSupported }
+                    selectedTokenIndex = if (firstSupported >= 0) firstSupported else 0
+                    authStatusText = when {
+                        tokens.isEmpty() ->
+                            "暂未发现有效的 BN_DEBUG 登录票据；请先启动渠道游戏登录进大厅一次后再扫描。"
+                        firstSupported < 0 ->
+                            "检测到 ${tokens.size} 条渠道票据（${tokens.first().label}），该联运渠道暂未收录云端密钥，请进游戏内使用「趴绑定 8位码」。"
+                        else ->
+                            "已发现 ${tokens.size} 条渠道票据，可选中后登录星枢或绑定 QQ。"
                     }
                 }
             } catch (e: Exception) {
@@ -2711,6 +2762,47 @@ internal class AppController(private val activity: Activity) {
             } catch (e: Exception) {
                 activity.runOnUiThread {
                     authBusy = false
+                    toast("绑定未完成：${e.message}")
+                }
+            }
+        }
+    }
+
+    fun bindQqHandoffWithSelectedToken() {
+        val handoff = pendingQqHandoff
+        val tok = detectedTokens.getOrNull(selectedTokenIndex) ?: detectedTokens.firstOrNull { it.nativeSupported } ?: return
+        if (authBusy || handoff.isBlank()) return
+        if (!tok.nativeSupported) {
+            toast("该渠道（${tok.label}）暂不支持票据直绑，请进游戏使用「趴绑定 8位码」。")
+            return
+        }
+        authBusy = true
+        authStatusText = "正在通过「${tok.label}」票据完成 QQ 绑定…"
+        val devId = MobileAuthHub.getOrCreateDeviceId(prefs)
+        authWorker.execute {
+            try {
+                val acct = MobileAuthHub.completeQqHandoff(handoff, tok, devId)
+                if (acct.token.isNotEmpty()) {
+                    MobileAuthHub.saveSession(prefs, acct)
+                }
+                val sum = if (acct.token.isNotEmpty()) {
+                    try { MobileAuthHub.fetchAccountSummary(acct.token) } catch (_: Exception) { "" }
+                } else ""
+                activity.runOnUiThread {
+                    authBusy = false
+                    if (acct.token.isNotEmpty()) {
+                        boundSession = acct
+                        if (sum.isNotEmpty()) cloudSummary = sum
+                    }
+                    pendingQqHandoff = ""
+                    pendingQqRequester = ""
+                    authStatusText = "已通过「${tok.label}」将 ${acct.nick}（UID ${acct.uid}）绑定至 QQ。"
+                    toast("已通过「${tok.label}」完成 QQ 绑定与星枢登录！")
+                }
+            } catch (e: Exception) {
+                activity.runOnUiThread {
+                    authBusy = false
+                    authStatusText = "渠道 QQ 绑定失败：${e.message}"
                     toast("绑定未完成：${e.message}")
                 }
             }

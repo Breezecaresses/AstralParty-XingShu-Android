@@ -140,4 +140,34 @@ public class BnSdkTokenExtractorTest {
         assertEquals("110001957", fallbackList.get(0).appId);
         assertEquals(biliTok, fallbackList.get(0).sdkToken);
     }
+
+    @Test
+    public void parsesEngineTokensJsonAndRejectsErrorPayload() throws Exception {
+        String miTok = "miJsonToken1234567890abcdefghijklmnopqrstuvwxyzABCDEFG";
+        String unknownTok = "m4399JsonToken1234567890abcdefghijklmnopqrstuvwxyzABCD";
+        String json = "{\"tokens\":["
+            + "{\"platform\":\"XIAOMI\",\"appId\":\"110001934\",\"label\":\"小米渠道\",\"userId\":\"古明地猫耳 (UID 1556514)\",\"sdkToken\":\"" + miTok + "\",\"nativeSupported\":true},"
+            + "{\"platform\":\"ANDROID_CN\",\"appId\":\"110099999\",\"label\":\"渠道 110099999\",\"userId\":\"u4399\",\"sdkToken\":\"" + unknownTok + "\",\"nativeSupported\":false}"
+            + "]}";
+        List<BnSdkTokenExtractor.ChannelToken> parsed = BnSdkTokenExtractor.parseTokensOutput(json, "110001934");
+        assertEquals(2, parsed.size());
+        assertEquals("XIAOMI", parsed.get(0).platform);
+        assertEquals("110001934", parsed.get(0).appId);
+        assertEquals(miTok, parsed.get(0).sdkToken);
+        assertTrue(parsed.get(0).nativeSupported);
+        assertFalse(parsed.get(1).nativeSupported);
+        assertTrue(parsed.get(1).displaySummary().contains("趴绑定"));
+
+        try {
+            BnSdkTokenExtractor.parseTokensOutput("{\"error\":\"需要本机无线调试授权\"}", "");
+            fail("Expected IOException for JSON error");
+        } catch (IOException expected) {
+            assertTrue(expected.getMessage().contains("无线调试"));
+        }
+
+        String raw = "11-14 02:00:00 I/BN_DEBUG: {\"appId\":\"110001934\",\"accessToken\":\"" + miTok + "\"}\n";
+        List<BnSdkTokenExtractor.ChannelToken> rawParsed = BnSdkTokenExtractor.parseTokensOutput(raw, "");
+        assertEquals(1, rawParsed.size());
+        assertEquals("XIAOMI", rawParsed.get(0).platform);
+    }
 }

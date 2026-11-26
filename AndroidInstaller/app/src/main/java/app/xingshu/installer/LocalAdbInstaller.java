@@ -348,10 +348,13 @@ final class LocalAdbInstaller implements Closeable {
     }
 
     private String shell(String command, long timeout) throws Exception {
+        if (!manager.isConnected()) {
+            throw new IOException("无线调试连接已断开，请重新连接无线调试");
+        }
         ScheduledFuture<?> deadline = timer.schedule(() -> {
             try { manager.disconnect(); } catch (Exception ignored) { }
         }, timeout, TimeUnit.MILLISECONDS);
-        try (AdbStream stream = manager.openStream("shell:" + command); InputStream in = stream.openInputStream()) {
+        try (AdbStream stream = openStreamChecked("shell:" + command); InputStream in = stream.openInputStream()) {
             ByteArrayOutputStream bytes = new ByteArrayOutputStream();
             byte[] b = new byte[4096];
             int n;
@@ -366,10 +369,13 @@ final class LocalAdbInstaller implements Closeable {
     }
 
     private void pushFile(java.io.File localFile, String remoteName) throws Exception {
+        if (!manager.isConnected()) {
+            throw new IOException("无线调试连接已断开，请重新连接无线调试");
+        }
         ScheduledFuture<?> deadline = timer.schedule(() -> {
             try { manager.disconnect(); } catch (Exception ignored) { }
         }, 120000, TimeUnit.MILLISECONDS);
-        try (AdbStream stream = manager.openStream("sync:"); InputStream fileIn = new java.io.FileInputStream(localFile)) {
+        try (AdbStream stream = openStreamChecked("sync:"); InputStream fileIn = new java.io.FileInputStream(localFile)) {
             OutputStream out = stream.openOutputStream();
             DataInputStream reply = new DataInputStream(stream.openInputStream());
             byte[] path = (LocalInstallerMain.STAGING + "/" + remoteName + ",33152").getBytes(StandardCharsets.UTF_8);
@@ -397,6 +403,17 @@ final class LocalAdbInstaller implements Closeable {
             }
         } finally {
             deadline.cancel(false);
+        }
+    }
+
+    private AdbStream openStreamChecked(String destination) throws Exception {
+        if (!manager.isConnected()) {
+            throw new IOException("无线调试连接已断开，请重新连接无线调试");
+        }
+        try {
+            return manager.openStream(destination);
+        } catch (IllegalStateException ise) {
+            throw new IOException("无线调试连接已断开，请重新连接无线调试", ise);
         }
     }
 

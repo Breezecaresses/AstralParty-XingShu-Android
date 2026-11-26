@@ -138,6 +138,41 @@ final class BnSdkTokenExtractor {
         }
     }
 
+    static List<ChannelToken> parseTokensOutput(String rawOutput, String fallbackAppId) throws IOException {
+        if (rawOutput == null) return new ArrayList<>();
+        String trimmed = rawOutput.trim();
+        if (trimmed.isEmpty()) return new ArrayList<>();
+        if (trimmed.startsWith("{")) {
+            Map<String, Object> root = MiniJson.parseObject(trimmed);
+            String err = MiniJson.stringField(root, "error");
+            if (!err.isEmpty()) {
+                throw new IOException(err);
+            }
+            List<?> rawList = MiniJson.listField(root, "tokens");
+            List<ChannelToken> out = new ArrayList<>(rawList.size());
+            for (Object item : rawList) {
+                if (!(item instanceof Map<?, ?>)) continue;
+                @SuppressWarnings("unchecked")
+                Map<String, Object> m = (Map<String, Object>) item;
+                String sdkToken = MiniJson.stringField(m, "sdkToken");
+                if (sdkToken.isEmpty() || sdkToken.endsWith("_sh")) continue;
+                String appId = MiniJson.stringField(m, "appId");
+                String userId = MiniJson.stringField(m, "userId");
+                String platform = MiniJson.stringField(m, "platform");
+                String label = MiniJson.stringField(m, "label");
+                ChannelToken canonical = classifyApp(appId, userId, sdkToken);
+                String effPlatform = platform.isEmpty() ? canonical.platform : platform;
+                String effLabel = label.isEmpty() ? canonical.label : label;
+                boolean effNative = m.containsKey("nativeSupported")
+                    ? MiniJson.boolField(m, "nativeSupported", canonical.nativeSupported)
+                    : canonical.nativeSupported;
+                out.add(new ChannelToken(effPlatform, appId, effLabel, userId, sdkToken, effNative));
+            }
+            return out;
+        }
+        return extractFromLogcat(rawOutput, fallbackAppId);
+    }
+
     static List<ChannelToken> extractFromLogcat(String logcatText) {
         return extractFromLogcat(logcatText, "");
     }

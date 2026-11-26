@@ -453,6 +453,9 @@ internal fun XingShuMobileApp(controller: AppController) {
         // QQ Quick Login Dialog
         if (controller.pendingQqHandoff.isNotEmpty()) {
             val session = controller.boundSession
+            val selectedTok = controller.detectedTokens.getOrNull(controller.selectedTokenIndex)
+            val nativeTok = selectedTok?.takeIf { it.nativeSupported }
+                ?: controller.detectedTokens.firstOrNull { it.nativeSupported }
             AlertDialog(
                 onDismissRequest = { controller.dismissQqHandoff() },
                 title = { Text("QQ 快速绑定授权") },
@@ -462,14 +465,29 @@ internal fun XingShuMobileApp(controller: AppController) {
                         if (session != null) {
                             Text("当前星枢账号：${session.nick} (UID ${session.uid})")
                             Text("确认后即可将当前账号绑定至 QQ。", style = MaterialTheme.typography.bodySmall)
+                        } else if (nativeTok != null) {
+                            Text("已识别渠道票据：${nativeTok.displaySummary()}", style = MaterialTheme.typography.bodySmall)
+                            Text("点击下方按钮可直接用该渠道账号绑定 QQ 并同步登录星枢。", style = MaterialTheme.typography.bodySmall)
                         } else {
-                            Text("请先在「设置」页通过官方网页或扫描渠道票据登录星枢账号，然后确认绑定。", style = MaterialTheme.typography.bodySmall)
+                            if (controller.authStatusText.isNotBlank()) {
+                                Text(controller.authStatusText, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                            }
+                            Text("请先扫描已登录的官方/小米渠道票据，或点击「去登录星枢」完成网页授权。", style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 },
                 dismissButton = {
-                    TextButton(onClick = { controller.dismissQqHandoff() }) {
-                        Text("取消")
+                    if (session == null && nativeTok == null && controller.isPrivilegeReady()) {
+                        TextButton(
+                            onClick = { controller.scanChannelTokens() },
+                            enabled = !controller.authBusy,
+                        ) {
+                            Text(if (controller.authBusy) "扫描中…" else "扫描渠道票据")
+                        }
+                    } else {
+                        TextButton(onClick = { controller.dismissQqHandoff() }) {
+                            Text("取消")
+                        }
                     }
                 },
                 confirmButton = {
@@ -479,6 +497,17 @@ internal fun XingShuMobileApp(controller: AppController) {
                             enabled = !controller.authBusy,
                         ) {
                             Text("确认绑定 QQ")
+                        }
+                    } else if (nativeTok != null) {
+                        Button(
+                            onClick = {
+                                val idx = controller.detectedTokens.indexOf(nativeTok)
+                                if (idx >= 0) controller.selectedTokenIndex = idx
+                                controller.bindQqHandoffWithSelectedToken()
+                            },
+                            enabled = !controller.authBusy,
+                        ) {
+                            Text("使用渠道票据绑定 QQ")
                         }
                     } else {
                         Button(

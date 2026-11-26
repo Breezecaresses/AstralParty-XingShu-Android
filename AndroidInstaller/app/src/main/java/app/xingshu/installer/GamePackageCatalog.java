@@ -83,6 +83,9 @@ final class GamePackageCatalog {
         if (lower.contains("meizu")) {
             return new ChannelMeta(clean, "MEIZU", "魅族渠道");
         }
+        if (lower.contains("honor")) {
+            return new ChannelMeta(clean, "HONOR", "荣耀渠道");
+        }
         return new ChannelMeta(clean, "ANDROID_CN", "安卓渠道 (" + clean + ")");
     }
 

@@ -9,7 +9,13 @@
         <package android:name="com.feimo.astralparty.huawei" />
         <package android:name="com.feimo.jxpd.huawei" />
         <package android:name="com.feimo.astralparty.nearme.gamecenter" />
+        <package android:name="com.feimo.jxpd.nearme.gamecenter" />
         <package android:name="com.feimo.astralparty.vivo" />
+        <package android:name="com.feimo.jxpd.vivo" />
+        <package android:name="com.feimo.jxpd.m4399" />
+        <package android:name="com.feimo.astralparty.m4399" />
+        <package android:name="com.feimo.jxpd.meizu" />
+        <package android:name="com.feimo.jxpd.honor" />
         <package android:name="com.tencent.tmgp.astralparty" />
         <package android:name="moe.shizuku.privileged.api" />
         <package android:name="com.tencent.mobileqq" />
