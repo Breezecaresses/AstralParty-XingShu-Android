@@ -19,7 +19,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Breezecaresses/AstralParty-XingShu-Android/releases/latest">Download Latest APK</a> ·
+  <a href="https://astralparty-xingshu.lanxichaxu.cn/xingshu-hub/assets/launcher-runtime/android-releases/v0.2.2/XingShu_Android_0.2.2.apk">⚡ EdgeOne CDN Direct APK (v0.2.2)</a> ·
+  <a href="https://github.com/Breezecaresses/AstralParty-XingShu-Android/releases/latest">GitHub Releases</a> ·
   <a href="https://github.com/Breezecaresses/AstralParty-XingShu">🖥️ Main Desktop / Web Repo</a> ·
   <a href="https://astralparty-xingshu.lanxichaxu.cn/xingshu-hub/">🌐 Web Workshop</a> ·
   <a href="README.md">English</a> · <a href="README_CN.md">简体中文</a>

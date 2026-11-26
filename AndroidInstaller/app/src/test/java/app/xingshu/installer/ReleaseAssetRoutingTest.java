@@ -70,4 +70,10 @@ public final class ReleaseAssetRoutingTest {
         assertEquals(java.util.Collections.singletonList("v0.1.3"),ReleaseUpdates.parseAtomTags(xml,false,8));
         assertEquals(java.util.Arrays.asList("v0.1.4-test.1","v0.1.3"),ReleaseUpdates.parseAtomTags(xml,true,8));
     }
+    @Test public void cdnUrlsUseOfficialEdgeOneHost() {
+        assertEquals("https://astralparty-xingshu.lanxichaxu.cn/xingshu-hub/assets/launcher-runtime/android-releases/latest.json",
+            ReleaseUpdates.cdnLatestUrl());
+        assertEquals("https://astralparty-xingshu.lanxichaxu.cn/xingshu-hub/assets/launcher-runtime/android-releases/v0.2.2/XingShu_Android_0.2.2.apk",
+            ReleaseUpdates.cdnAssetUrl("v0.2.2","XingShu_Android_0.2.2.apk"));
+    }
 }

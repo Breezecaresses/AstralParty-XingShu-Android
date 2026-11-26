@@ -17,8 +17,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.CleaningServices
+import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.Gamepad
 import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.OpenInNew
+import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.SaveAlt
 import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material.icons.rounded.Usb
@@ -329,6 +332,59 @@ internal fun SettingsScreen(controller: AppController) {
                         Spacer(modifier = Modifier.width(4.dp))
                         Text("复制诊断文本")
                     }
+                }
+            }
+        }
+
+        // 5. Open-Source Repository & Project Origin Card
+        OutlinedCard(
+            colors = CardDefaults.outlinedCardColors(
+                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+            ),
+            shape = MaterialTheme.shapes.large,
+        ) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(Icons.Rounded.Code, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("开源仓库与项目来源", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            text = "星枢手机版（AstralParty-XingShu-Android）源自开源项目 AstralParty-XingShu（星枢），现作为独立手机版仓库持续维护，遵循《AstralParty-XingShu 许可与合理使用条款》。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    FilledTonalButton(
+                        onClick = { controller.openExternalBrowser("https://github.com/Breezecaresses/AstralParty-XingShu-Android") },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Icon(Icons.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("手机版仓库", maxLines = 1)
+                    }
+                    OutlinedButton(
+                        onClick = { controller.openExternalBrowser("https://github.com/Breezecaresses/AstralParty-XingShu") },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Icon(Icons.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("桌面/主仓库", maxLines = 1)
+                    }
+                }
+
+                OutlinedButton(
+                    onClick = { controller.openExternalBrowser("https://astralparty-xingshu.lanxichaxu.cn/xingshu-hub/") },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(Icons.Rounded.Public, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("访问星枢在线网页工坊 · 社区反馈 QQ 群 1080908767")
                 }
             }
         }

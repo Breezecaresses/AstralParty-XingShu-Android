@@ -90,4 +90,22 @@ public final class PayloadDownloadManagerTest {
         }
         assertFalse(target.exists());
     }
+
+    @Test public void splitsParallelRangesCleanly() {
+        long[][] ranges = PayloadDownloadManager.computeRanges(10_000_003L, 4);
+        assertEquals(4, ranges.length);
+        assertEquals(0L, ranges[0][0]);
+        long covered = 0L;
+        for (int i = 0; i < ranges.length; i++) {
+            long start = ranges[i][0];
+            long end = ranges[i][1];
+            assertTrue(end >= start);
+            if (i > 0) {
+                assertEquals(ranges[i - 1][1] + 1L, start);
+            }
+            covered += (end - start + 1L);
+        }
+        assertEquals(10_000_003L, covered);
+        assertEquals(10_000_002L, ranges[3][1]);
+    }
 }

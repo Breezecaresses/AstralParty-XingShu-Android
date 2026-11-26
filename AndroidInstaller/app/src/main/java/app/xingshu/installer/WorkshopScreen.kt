@@ -1,5 +1,10 @@
 package app.xingshu.installer
 
+import android.graphics.ImageDecoder
+import android.graphics.drawable.AnimatedImageDrawable
+import android.graphics.drawable.Drawable
+import android.os.Build
+import android.widget.ImageView
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -66,9 +71,11 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -81,7 +88,11 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -626,10 +637,6 @@ private fun EmoteReactionBar(
     ) {
         items.forEach { entry ->
             val selected = viewerEmoteId == entry.emoteId
-            LaunchedEffect(entry.emoteId) {
-                controller.requestEmoteBitmap(entry.emoteId)
-            }
-            val bmp = controller.emoteBitmaps[entry.emoteId]
             Surface(
                 shape = RoundedCornerShape(999.dp),
                 color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerLow,
@@ -648,23 +655,13 @@ private fun EmoteReactionBar(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(5.dp),
                 ) {
-                    if (bmp != null) {
-                        Image(
-                            bitmap = bmp,
-                            contentDescription = GameEmoteCatalog.displayName(entry.emoteId),
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier
-                                .size(22.dp)
-                                .clip(RoundedCornerShape(6.dp)),
-                        )
-                    } else {
-                        Icon(
-                            imageVector = Icons.Rounded.Mood,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                            tint = MaterialTheme.colorScheme.primary,
-                        )
-                    }
+                    EmoteStickerView(
+                        emoteId = entry.emoteId,
+                        contentDescription = GameEmoteCatalog.displayName(entry.emoteId),
+                        size = 24.dp,
+                        cornerRadius = 6.dp,
+                        controller = controller,
+                    )
                     Text(
                         text = entry.count.toString(),
                         style = MaterialTheme.typography.labelMedium.copy(
@@ -783,10 +780,6 @@ private fun EmotePickerSheetContent(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             gridItems(displayEmotes, key = { it.id }) { emote ->
-                LaunchedEffect(emote.id) {
-                    controller.requestEmoteBitmap(emote.id)
-                }
-                val bmp = controller.emoteBitmaps[emote.id]
                 val isSelected = viewerEmoteId == emote.id
                 Surface(
                     shape = RoundedCornerShape(14.dp),
@@ -804,25 +797,13 @@ private fun EmotePickerSheetContent(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
-                        if (bmp != null) {
-                            Image(
-                                bitmap = bmp,
-                                contentDescription = emote.name,
-                                contentScale = ContentScale.Fit,
-                                modifier = Modifier
-                                    .size(44.dp)
-                                    .clip(RoundedCornerShape(8.dp)),
-                            )
-                        } else {
-                            Box(
-                                modifier = Modifier
-                                    .size(44.dp)
-                                    .background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(8.dp)),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Icon(Icons.Rounded.Mood, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        }
+                        EmoteStickerView(
+                            emoteId = emote.id,
+                            contentDescription = emote.name,
+                            size = 46.dp,
+                            cornerRadius = 8.dp,
+                            controller = controller,
+                        )
                         Text(
                             text = if (emote.animated) "${emote.name.replace("（动态）", "")}·动" else emote.name,
                             style = MaterialTheme.typography.labelSmall,
@@ -928,6 +909,94 @@ private fun PlatformLoginDialog(controller: AppController) {
             }
         },
     )
+}
+
+@Composable
+private fun EmoteStickerView(
+    emoteId: String,
+    contentDescription: String,
+    size: Dp,
+    cornerRadius: Dp,
+    controller: AppController,
+) {
+    LaunchedEffect(emoteId) {
+        controller.requestEmoteBitmap(emoteId)
+    }
+    val meta = remember(emoteId) { GameEmoteCatalog.findById(emoteId) }
+    val emoteFile = controller.emoteFiles[emoteId]
+    val fallbackBmp = controller.emoteBitmaps[emoteId]
+    val shouldAnimate = Build.VERSION.SDK_INT >= 28 && (meta?.animated == true) && emoteFile != null
+
+    val animDrawable by produceState<Drawable?>(initialValue = null, key1 = emoteId, key2 = emoteFile, key3 = shouldAnimate) {
+        value = if (!shouldAnimate || emoteFile == null) {
+            null
+        } else {
+            withContext(Dispatchers.IO) {
+                try {
+                    val src = ImageDecoder.createSource(emoteFile)
+                    ImageDecoder.decodeDrawable(src) { decoder, _, _ ->
+                        decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                    }
+                } catch (_: Exception) {
+                    null
+                }
+            }
+        }
+    }
+
+    if (Build.VERSION.SDK_INT >= 28 && animDrawable is AnimatedImageDrawable) {
+        val anim = animDrawable as AnimatedImageDrawable
+        DisposableEffect(anim) {
+            anim.repeatCount = AnimatedImageDrawable.REPEAT_INFINITE
+            anim.start()
+            onDispose {
+                try { anim.stop() } catch (_: Exception) { }
+            }
+        }
+        AndroidView(
+            factory = { ctx ->
+                ImageView(ctx).apply {
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                    adjustViewBounds = true
+                    setImageDrawable(anim)
+                }
+            },
+            update = { iv ->
+                if (iv.drawable !== anim) {
+                    iv.setImageDrawable(anim)
+                }
+                if (!anim.isRunning) {
+                    anim.start()
+                }
+            },
+            modifier = Modifier
+                .size(size)
+                .clip(RoundedCornerShape(cornerRadius)),
+        )
+    } else if (fallbackBmp != null) {
+        Image(
+            bitmap = fallbackBmp,
+            contentDescription = contentDescription,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier
+                .size(size)
+                .clip(RoundedCornerShape(cornerRadius)),
+        )
+    } else {
+        Box(
+            modifier = Modifier
+                .size(size)
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(cornerRadius)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.Mood,
+                contentDescription = contentDescription,
+                modifier = Modifier.size((size.value * 0.72f).dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
 }
 
 @Composable

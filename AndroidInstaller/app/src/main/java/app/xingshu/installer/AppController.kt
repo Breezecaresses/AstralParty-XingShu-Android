@@ -241,6 +241,7 @@ internal class AppController(private val activity: Activity) {
     var emotePickerMod by mutableStateOf<AndroidWorkshopClient.WorkshopMod?>(null)
     var pendingReactionAfterLogin by mutableStateOf<Pair<AndroidWorkshopClient.WorkshopMod, String>?>(null)
     val emoteBitmaps = mutableStateMapOf<String, ImageBitmap>()
+    val emoteFiles = mutableStateMapOf<String, File>()
     private val emoteMemCache = object : LruCache<String, ImageBitmap>(120) {}
     private val emotePending = mutableSetOf<String>()
 
@@ -1570,8 +1571,13 @@ internal class AppController(private val activity: Activity) {
     fun requestEmoteBitmap(emoteId: String) {
         val clean = emoteId.trim()
         if (clean.isEmpty() || !clean.matches(Regex("[A-Za-z0-9_.-]{1,80}"))) return
+        val diskDir = File(appContext.cacheDir, "emotes")
+        val diskFile = File(diskDir, "$clean.webp")
+        if (!emoteFiles.containsKey(clean) && diskFile.isFile && diskFile.length() >= 16L) {
+            emoteFiles[clean] = diskFile
+        }
         val cached = emoteMemCache.get(clean)
-        if (cached != null) {
+        if (cached != null && diskFile.isFile) {
             if (!emoteBitmaps.containsKey(clean)) emoteBitmaps[clean] = cached
             return
         }
@@ -1580,8 +1586,7 @@ internal class AppController(private val activity: Activity) {
         }
         thumbWorker.execute {
             try {
-                val diskDir = File(appContext.cacheDir, "emotes").apply { mkdirs() }
-                val diskFile = File(diskDir, "$clean.webp")
+                diskDir.mkdirs()
                 val raw: ByteArray = if (diskFile.isFile && diskFile.length() in 16L..(2 * 1024 * 1024L)) {
                     diskFile.readBytes()
                 } else {
@@ -1630,7 +1635,12 @@ internal class AppController(private val activity: Activity) {
                 val img = bmp.asImageBitmap()
                 emoteMemCache.put(clean, img)
                 activity.runOnUiThread {
-                    if (!disposed) emoteBitmaps[clean] = img
+                    if (!disposed) {
+                        emoteBitmaps[clean] = img
+                        if (diskFile.isFile) {
+                            emoteFiles[clean] = diskFile
+                        }
+                    }
                 }
             } catch (_: Exception) {
             } finally {

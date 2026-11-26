@@ -16,6 +16,10 @@ final class ReleaseUpdates {
     // Keep the signed identity compatible with installed clients from before the rename/split.
     static final String SIGNED_REPOSITORY="Breezecaresses/Xingshu-hub";
     static boolean isUpdateRepository(String repository) { return REPO.equals(repository)||MAIN_REPOSITORY.equals(repository)||SIGNED_REPOSITORY.equals(repository); }
+    static final String OFFICIAL_CDN_HOST=PayloadDownloadManager.OFFICIAL_HOST;
+    static final String OFFICIAL_CDN_RELEASES="https://"+OFFICIAL_CDN_HOST+"/xingshu-hub/assets/launcher-runtime/android-releases";
+    static String cdnLatestUrl() { return OFFICIAL_CDN_RELEASES+"/latest.json"; }
+    static String cdnAssetUrl(String tag,String assetName) { return OFFICIAL_CDN_RELEASES+"/"+tag+"/"+assetName; }
     static final String[] DOMESTIC_MIRRORS={"https://edgeone.gh-proxy.org/","https://gh-proxy.org/","https://ghfast.top/"};
     static final class Update {
         final JSONObject manifest;
@@ -74,7 +78,7 @@ final class ReleaseUpdates {
     private static boolean isAllowedHost(String host) {
         if(host==null)return false;
         String h=host.toLowerCase(java.util.Locale.ROOT);
-        return h.equals("github.com")||h.equals("api.github.com")||h.equals("release-assets.githubusercontent.com")||h.equals("objects.githubusercontent.com")
+        return h.equals(OFFICIAL_CDN_HOST)||h.equals("github.com")||h.equals("api.github.com")||h.equals("release-assets.githubusercontent.com")||h.equals("objects.githubusercontent.com")
             ||h.equals("edgeone.gh-proxy.org")||h.equals("gh-proxy.org")||h.equals("ghfast.top");
     }
     private static HttpsURLConnection connect(String address) throws Exception { return connect(address,30000,60000,null); }
@@ -169,16 +173,51 @@ final class ReleaseUpdates {
         }
         return tags;
     }
+    static Update parseCdnLatest(String rawJson,boolean preview,Certificate certificate) throws Exception {
+        if(rawJson==null||rawJson.trim().isEmpty())return null;
+        JSONObject root=new JSONObject(rawJson);
+        JSONObject envelopeObj=root.optJSONObject("envelope");
+        String tag;
+        boolean prerelease=root.optBoolean("prerelease",false);
+        String envelopeStr;
+        if(envelopeObj!=null) {
+            tag=root.optString("tag","");
+            envelopeStr=envelopeObj.toString();
+        } else {
+            envelopeStr=rawJson;
+            byte[] payload=Base64.getDecoder().decode(root.getString("payload"));
+            JSONObject p=new JSONObject(new String(payload,StandardCharsets.UTF_8));
+            tag=p.getString("tag");
+            prerelease=tag.contains("-");
+        }
+        if(!preview&&prerelease)return null;
+        try(InputStream cert=certificate.open()) {
+            JSONObject manifest=verify(envelopeStr,tag,cert);
+            return new Update(manifest,0);
+        }
+    }
     static Update check(boolean preview,Certificate certificate,CheckListener listener) throws Exception {
         CheckDeadline budget=new CheckDeadline();
+        Update best=null;
+        try {
+            listener.stage("正在连接官方高速节点检查更新…");
+            String cdnRaw=fetch(cdnLatestUrl()+"?t="+System.currentTimeMillis(),300000,budget);
+            Update cdnBest=parseCdnLatest(cdnRaw,preview,certificate);
+            if(cdnBest!=null) {
+                best=cdnBest;
+                if(!preview)return best;
+            }
+        } catch(Exception ignored) {}
         listener.stage("正在读取官方发布列表…");
         JSONArray releases=null;
         try {
             releases=new JSONArray(fetch("https://api.github.com/repos/"+REPO+"/releases?per_page=30",1800000,budget));
         } catch(IOException apiError) {
-            if(!isRetryableNetwork(apiError))throw apiError;
+            if(!isRetryableNetwork(apiError)) {
+                if(best!=null)return best;
+                throw apiError;
+            }
         }
-        Update best=null;
         if(releases!=null) {
             for(int i=0;i<releases.length();i++) {
                 JSONObject r=releases.getJSONObject(i);
@@ -192,7 +231,7 @@ final class ReleaseUpdates {
                 try {
                     String directManifest=RELEASES+"/download/"+tag+"/xingshu-update.json";
                     envelope=preferAsset(findAssetId(assets,"xingshu-update.json"),directManifest,
-                        address -> address.equals(directManifest)?fetchBrowserWithMirrors(address,300000,budget,false):fetch(address,300000,budget),
+                        address -> address.equals(directManifest)?fetchBrowserWithMirrors(address,300000,budget,true):fetch(address,300000,budget),
                         () -> listener.stage("官方文件接口暂不可用，正在尝试国内加速镜像与发布页入口…"));
                 } catch(IOException networkError) {
                     if(!isRetryableNetwork(networkError))throw networkError;
@@ -208,7 +247,13 @@ final class ReleaseUpdates {
             return best;
         }
         listener.stage("官方接口暂不可用，正在通过国内加速镜像读取发布记录…");
-        String atomXml=fetchBrowserWithMirrors("https://github.com/"+REPO+"/releases.atom",600000,budget,true);
+        String atomXml;
+        try {
+            atomXml=fetchBrowserWithMirrors("https://github.com/"+REPO+"/releases.atom",600000,budget,true);
+        } catch(IOException networkError) {
+            if(best!=null)return partialResult(best,networkError);
+            throw networkError;
+        }
         for(String tag:parseAtomTags(atomXml,preview,8)) {
             listener.stage("正在读取 "+tag.substring(1)+" 的签名更新清单…");
             String envelope;
@@ -249,35 +294,71 @@ final class ReleaseUpdates {
         return hex(digest.digest());
     }
     static HttpsURLConnection openDownloadWithMirrors(long assetId,String address) throws Exception {
-        try { return preferAsset(assetId,address,ReleaseUpdates::connect,() -> {}); }
-        catch(IOException firstError) {
-            if(!isRetryableNetwork(firstError))throw firstError;
-            IOException last=firstError;
-            for(String mirror:DOMESTIC_MIRRORS) {
-                try { return connect(mirror+address); }
-                catch(IOException mirrorError) {
-                    if(!isRetryableNetwork(mirrorError))throw mirrorError;
-                    last=mirrorError;
-                }
+        IOException last=null;
+        for(String mirror:DOMESTIC_MIRRORS) {
+            try { return connect(mirror+address,10000,20000,null); }
+            catch(IOException mirrorError) {
+                if(!isRetryableNetwork(mirrorError))throw mirrorError;
+                last=mirrorError;
             }
-            throw last;
         }
+        try { return preferAsset(assetId,address,ReleaseUpdates::connect,() -> {}); }
+        catch(IOException directError) { throw last!=null&&directError instanceof NetworkFailure?directError:(last!=null?last:directError); }
     }
     static File download(Update update,File directory,DownloadListener listener) throws Exception {
         JSONObject asset=update.manifest.getJSONObject("android");
-        String address=RELEASES+"/download/"+update.manifest.getString("tag")+"/"+asset.getString("asset");
+        String tag=update.manifest.getString("tag");
+        String assetName=asset.getString("asset");
+        long size=asset.getLong("size");
+        String expectedSha=asset.getString("sha256");
         File partial=new File(directory,"update.download"), target=new File(directory,"update.apk");
-        // Fallback is limited to opening the response, before any bytes or integrity checks.
+
+        // 1) Official EdgeOne CDN first (with 4-way Range acceleration + full SHA-256 verification).
+        String cdnAddress=cdnAssetUrl(tag,assetName);
+        try {
+            URL cdnUrl=PayloadDownloadManager.validateOfficialUrl(cdnAddress);
+            long headLen=PayloadDownloadManager.probeRangeLength(cdnUrl,size);
+            if(headLen==size && PayloadDownloadManager.tryDownloadParallelRanges(cdnUrl,partial,size,assetName,(rx,tot,spd,st) -> listener.progress(rx,tot))) {
+                listener.verifying();
+                String hash=PayloadDownloadManager.sha256File(partial);
+                if(!hash.equals(expectedSha))throw new IOException("更新 APK 校验失败");
+                if(target.exists())target.delete();
+                if(!partial.renameTo(target))throw new IOException("无法保存新版 APK，请重试");
+                return target;
+            }
+            partial.delete();
+            HttpsURLConnection cdnConn=connect(cdnAddress,10000,20000,null);
+            try {
+                if(cdnConn.getContentLengthLong()>=0&&cdnConn.getContentLengthLong()!=size)throw new IOException("更新文件大小不符");
+                String hash;
+                try(InputStream in=cdnConn.getInputStream();FileOutputStream out=new FileOutputStream(partial)) {
+                    hash=copyDownload(in,out,size,listener);
+                    out.getFD().sync();
+                }
+                listener.verifying();
+                if(!hash.equals(expectedSha))throw new IOException("更新 APK 校验失败");
+                if(target.exists())target.delete();
+                if(!partial.renameTo(target))throw new IOException("无法保存新版 APK，请重试");
+                return target;
+            } finally { cdnConn.disconnect(); partial.delete(); }
+        } catch(IOException cdnNetworkOrMissing) {
+            if(cdnNetworkOrMissing.getMessage()!=null && cdnNetworkOrMissing.getMessage().contains("校验失败"))throw cdnNetworkOrMissing;
+            partial.delete();
+        }
+
+        // 2) Domestic GitHub mirrors -> 3) Official GitHub API / Release fallback.
+        String address=RELEASES+"/download/"+tag+"/"+assetName;
         HttpsURLConnection c=openDownloadWithMirrors(update.androidAssetId,address);
         try {
-            long size=asset.getLong("size"); String hash;
+            String hash;
             if(c.getContentLengthLong()>=0&&c.getContentLengthLong()!=size)throw new IOException("更新文件大小不符");
             try(InputStream in=c.getInputStream();FileOutputStream out=new FileOutputStream(partial)) {
                 hash=copyDownload(in,out,size,listener);
                 out.getFD().sync();
             }
             listener.verifying();
-            if(!hash.equals(asset.getString("sha256")))throw new IOException("更新 APK 校验失败");
+            if(!hash.equals(expectedSha))throw new IOException("更新 APK 校验失败");
+            if(target.exists())target.delete();
             if(!partial.renameTo(target))throw new IOException("无法保存新版 APK，请重试");
             return target;
         } finally { c.disconnect(); partial.delete(); }

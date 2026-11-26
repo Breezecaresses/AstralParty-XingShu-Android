@@ -6,10 +6,19 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.RandomAccessFile;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.security.MessageDigest;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import javax.net.ssl.HttpsURLConnection;
 
 /**
@@ -19,6 +28,8 @@ import javax.net.ssl.HttpsURLConnection;
 final class PayloadDownloadManager {
     static final String OFFICIAL_HOST = "astralparty-xingshu.lanxichaxu.cn";
     static final long MAX_PAYLOAD_BYTES = 1024L * 1024L * 1024L;
+    static final long PARALLEL_THRESHOLD_BYTES = 2L * 1024L * 1024L;
+    static final int PARALLEL_THREADS = 4;
     private static final long PROGRESS_INTERVAL_NS = 80_000_000L;
     private static final long PROGRESS_STEP_BYTES = 64L * 1024L;
 
@@ -112,34 +123,210 @@ final class PayloadDownloadManager {
         URL url = validateOfficialUrl(urlStr);
         File target = cacheFileForHash(cacheDir, expectedSha256);
         if (listener != null) {
-            listener.onProgress(0L, Math.max(0L, expectedSize), 0L, "正在连接下载 " + label + "…");
+            listener.onProgress(0L, Math.max(0L, expectedSize), 0L, "正在连接 EdgeOne CDN 下载 " + label + "…");
         }
 
-        HttpsURLConnection conn = (HttpsURLConnection) url.openConnection();
-        conn.setInstanceFollowRedirects(false);
-        conn.setConnectTimeout(15000);
-        conn.setReadTimeout(30000);
-        conn.setRequestMethod("GET");
-        conn.setRequestProperty("User-Agent", "XingShu-Android-Launcher/1");
-        conn.setRequestProperty("Accept-Encoding", "identity");
+        long headLength = probeRangeLength(url, expectedSize);
+        if (headLength >= PARALLEL_THRESHOLD_BYTES && headLength <= MAX_PAYLOAD_BYTES) {
+            File parallelTmp = new File(cacheDir, expectedSha256.toLowerCase(Locale.ROOT) + "." + System.nanoTime() + ".part");
+            try {
+                if (tryDownloadParallelRanges(url, parallelTmp, headLength, label, listener)) {
+                    if (listener != null) {
+                        listener.onProgress(headLength, headLength, 0L, "正在校验 " + label + " SHA-256…");
+                    }
+                    String actualSha = sha256File(parallelTmp);
+                    if (!expectedSha256.toLowerCase(Locale.ROOT).equals(actualSha)) {
+                        throw new SecurityException("文件 SHA-256 校验未通过，已丢弃（期望 " + expectedSha256.substring(0, 8) + "，实际 " + actualSha.substring(0, 8) + "）");
+                    }
+                    if (target.exists() && !target.delete()) {
+                        throw new IOException("无法替换旧缓存文件");
+                    }
+                    if (!parallelTmp.renameTo(target)) {
+                        copyFile(parallelTmp, target);
+                    }
+                    if (listener != null) {
+                        listener.onProgress(headLength, headLength, 0L, label + " 下载并校验完成");
+                    }
+                    return target;
+                }
+            } finally {
+                if (parallelTmp.exists()) {
+                    parallelTmp.delete();
+                }
+            }
+        }
+
+        IOException lastIo = null;
+        for (int attempt = 0; attempt < 2; attempt++) {
+            HttpsURLConnection conn = (HttpsURLConnection) url.openConnection();
+            conn.setInstanceFollowRedirects(false);
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(30000);
+            conn.setRequestMethod("GET");
+            conn.setRequestProperty("User-Agent", "XingShu-Android-Launcher/2");
+            conn.setRequestProperty("Accept-Encoding", "identity");
+            try {
+                int code = conn.getResponseCode();
+                if (code != HttpURLConnection.HTTP_OK) {
+                    throw new IOException("下载 " + label + " 失败（HTTP " + code + "）");
+                }
+                long headerLen = conn.getContentLengthLong();
+                if (headerLen > MAX_PAYLOAD_BYTES) {
+                    throw new IOException("远端文件大小超过上限（1 GB）");
+                }
+                if (expectedSize > 0 && headerLen > 0 && headerLen != expectedSize) {
+                    throw new IOException("远端文件大小与清单不一致（声明 " + expectedSize + " B，实际 " + headerLen + " B）");
+                }
+                long totalExpected = expectedSize > 0 ? expectedSize : headerLen;
+                try (InputStream in = conn.getInputStream()) {
+                    return downloadStreamToCache(in, cacheDir, target, expectedSha256, totalExpected, label, listener);
+                }
+            } catch (IOException ioEx) {
+                lastIo = ioEx;
+                if (attempt == 1) throw ioEx;
+            } finally {
+                conn.disconnect();
+            }
+        }
+        throw lastIo != null ? lastIo : new IOException("下载 " + label + " 失败");
+    }
+
+    static long[][] computeRanges(long totalBytes, int parts) {
+        if (totalBytes <= 0 || parts <= 0) {
+            return new long[0][0];
+        }
+        int count = (int) Math.min(parts, totalBytes);
+        long[][] ranges = new long[count][2];
+        long chunk = totalBytes / count;
+        long rem = totalBytes % count;
+        long cursor = 0L;
+        for (int i = 0; i < count; i++) {
+            long len = chunk + (i < rem ? 1L : 0L);
+            ranges[i][0] = cursor;
+            ranges[i][1] = cursor + len - 1L;
+            cursor += len;
+        }
+        return ranges;
+    }
+
+    static long probeRangeLength(URL url, long expectedSize) {
+        if (url == null || !"https".equalsIgnoreCase(url.getProtocol())) return -1L;
+        HttpsURLConnection conn = null;
         try {
-            int code = conn.getResponseCode();
-            if (code != HttpURLConnection.HTTP_OK) {
-                throw new IOException("下载 " + label + " 失败（HTTP " + code + "）");
-            }
-            long headerLen = conn.getContentLengthLong();
-            if (headerLen > MAX_PAYLOAD_BYTES) {
-                throw new IOException("远端文件大小超过上限（1 GB）");
-            }
-            if (expectedSize > 0 && headerLen > 0 && headerLen != expectedSize) {
-                throw new IOException("远端文件大小与清单不一致（声明 " + expectedSize + " B，实际 " + headerLen + " B）");
-            }
-            long totalExpected = expectedSize > 0 ? expectedSize : headerLen;
-            try (InputStream in = conn.getInputStream()) {
-                return downloadStreamToCache(in, cacheDir, target, expectedSha256, totalExpected, label, listener);
-            }
+            conn = (HttpsURLConnection) url.openConnection();
+            conn.setInstanceFollowRedirects(false);
+            conn.setConnectTimeout(8000);
+            conn.setReadTimeout(10000);
+            conn.setRequestMethod("HEAD");
+            conn.setRequestProperty("User-Agent", "XingShu-Android-Launcher/2");
+            conn.setRequestProperty("Accept-Encoding", "identity");
+            if (conn.getResponseCode() != HttpURLConnection.HTTP_OK) return -1L;
+            long len = conn.getContentLengthLong();
+            if (len < PARALLEL_THRESHOLD_BYTES || len > MAX_PAYLOAD_BYTES) return -1L;
+            if (expectedSize > 0 && len != expectedSize) return -1L;
+            String ar = conn.getHeaderField("Accept-Ranges");
+            if (ar == null || !ar.toLowerCase(Locale.ROOT).contains("bytes")) return -1L;
+            return len;
+        } catch (Exception ignored) {
+            return -1L;
         } finally {
-            conn.disconnect();
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    static boolean tryDownloadParallelRanges(
+            URL url,
+            File tmpFile,
+            long totalSize,
+            String displayLabel,
+            ProgressListener listener) {
+        if (totalSize < PARALLEL_THRESHOLD_BYTES || totalSize > MAX_PAYLOAD_BYTES) return false;
+        long[][] ranges = computeRanges(totalSize, PARALLEL_THREADS);
+        if (ranges.length <= 1) return false;
+        String label = (displayLabel == null || displayLabel.isEmpty()) ? "资源包" : displayLabel;
+        try {
+            try (RandomAccessFile pre = new RandomAccessFile(tmpFile, "rw")) {
+                pre.setLength(totalSize);
+            }
+            ExecutorService pool = Executors.newFixedThreadPool(ranges.length);
+            AtomicLong totalReceived = new AtomicLong(0L);
+            AtomicLong lastEmitNs = new AtomicLong(System.nanoTime());
+            AtomicBoolean cancelled = new AtomicBoolean(false);
+            long startedNs = System.nanoTime();
+            try {
+                List<Callable<Void>> tasks = new ArrayList<>(ranges.length);
+                for (long[] slice : ranges) {
+                    final long sliceStart = slice[0];
+                    final long sliceEnd = slice[1];
+                    tasks.add(() -> {
+                        long sliceWritten = 0L;
+                        long expectedSliceLen = sliceEnd - sliceStart + 1L;
+                        for (int attempt = 0; attempt < 3; attempt++) {
+                            if (cancelled.get()) throw new IOException("并发分片已取消");
+                            long cursor = sliceStart + sliceWritten;
+                            if (cursor > sliceEnd) break;
+                            HttpsURLConnection c = (HttpsURLConnection) url.openConnection();
+                            c.setInstanceFollowRedirects(false);
+                            c.setConnectTimeout(10000);
+                            c.setReadTimeout(20000);
+                            c.setRequestMethod("GET");
+                            c.setRequestProperty("User-Agent", "XingShu-Android-Launcher/2");
+                            c.setRequestProperty("Accept-Encoding", "identity");
+                            c.setRequestProperty("Range", "bytes=" + cursor + "-" + sliceEnd);
+                            try {
+                                int status = c.getResponseCode();
+                                if (status != HttpURLConnection.HTTP_PARTIAL) {
+                                    throw new IOException("分片响应码非 206：" + status);
+                                }
+                                long need = expectedSliceLen - sliceWritten;
+                                byte[] buf = new byte[65536];
+                                try (InputStream in = c.getInputStream();
+                                     RandomAccessFile raf = new RandomAccessFile(tmpFile, "rw")) {
+                                    raf.seek(cursor);
+                                    int n;
+                                    while (sliceWritten < expectedSliceLen && (n = in.read(buf, 0, (int) Math.min(buf.length, need))) != -1) {
+                                        raf.write(buf, 0, n);
+                                        sliceWritten += n;
+                                        need -= n;
+                                        long rx = totalReceived.addAndGet(n);
+                                        if (listener != null) {
+                                            long now = System.nanoTime();
+                                            long prev = lastEmitNs.get();
+                                            if (rx >= totalSize || (now - prev >= PROGRESS_INTERVAL_NS && lastEmitNs.compareAndSet(prev, now))) {
+                                                long elapsed = Math.max(1L, now - startedNs);
+                                                long spd = (rx * 1_000_000_000L) / elapsed;
+                                                listener.onProgress(Math.min(rx, totalSize), totalSize, spd, "正在 4 路并发高速下载 " + label + "…");
+                                            }
+                                        }
+                                    }
+                                }
+                                if (sliceWritten == expectedSliceLen) break;
+                            } catch (Exception ex) {
+                                if (attempt == 2) {
+                                    cancelled.set(true);
+                                    throw ex;
+                                }
+                            } finally {
+                                c.disconnect();
+                            }
+                        }
+                        if (sliceWritten != expectedSliceLen) {
+                            cancelled.set(true);
+                            throw new IOException("分片未下载完整");
+                        }
+                        return null;
+                    });
+                }
+                List<Future<Void>> futures = pool.invokeAll(tasks);
+                for (Future<Void> f : futures) {
+                    f.get();
+                }
+                return totalReceived.get() == totalSize;
+            } finally {
+                pool.shutdownNow();
+            }
+        } catch (Exception ignored) {
+            return false;
         }
     }
 
