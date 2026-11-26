@@ -20,6 +20,7 @@
 
 <p align="center">
   <a href="https://astralparty-xingshu.lanxichaxu.cn/xingshu-hub/assets/launcher-runtime/android-releases/v0.2.2/XingShu_Android_0.2.2.apk">⚡ 国内高速直链下载 v0.2.2 APK</a> ·
+  <a href="https://astralparty-xingshu.lanxichaxu.cn/xingshu-hub/assets/launcher-runtime/android-releases/v0.2.2/XingShu_Android_0.2.2.zip">国内直链整合包 ZIP</a> ·
   <a href="https://github.com/Breezecaresses/AstralParty-XingShu-Android/releases/latest">GitHub Releases</a> ·
   <a href="https://github.com/Breezecaresses/AstralParty-XingShu">🖥️ 返回电脑端主仓库</a> ·
   <a href="https://astralparty-xingshu.lanxichaxu.cn/xingshu-hub/">🌐 在线网页工坊</a> ·
