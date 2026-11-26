@@ -1,0 +1,25 @@
+# Build & IDE caches
+.gradle/
+build/
+*/build/
+*/bin/
+*/obj/
+__pycache__/
+*.pyc
+.idea/
+*.iml
+local.properties
+
+# Game baselines, binaries & signing keys (never commit)
+XingShu-Dev/references/
+XingShu-Dev/tools/lib/
+XingShu-Dev/build/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.jks
+*.keystore
+*.password
+*.dll
+!XingShu-Dev/tools/**

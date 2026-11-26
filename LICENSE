@@ -1,0 +1,61 @@
+AstralParty-XingShu License & Fair Use Terms
+Copyright (c) 2026 Breezecaresses. All rights reserved.
+
+This repository is source-available rather than licensed under MIT or other
+permissive open-source licenses. Except as explicitly permitted below, all
+intellectual property rights are reserved by the author (Breezecaresses).
+Good-faith personal, educational, and open community use that respects these
+terms is always welcome and will not be pursued.
+
+1. Personal & Non-Commercial Use
+   You may download, build, run, and modify this project for personal,
+   non-commercial use without asking for prior permission.
+
+2. Limited Code Reference
+   If you only reference small excerpts or patterns from this repository, or
+   build an unrelated project whose core functionality does not overlap with
+   AstralParty-XingShu:
+   - Credit the original author (Breezecaresses) and link to
+     https://github.com/Breezecaresses/AstralParty-XingShu.
+   - Do not use misleading names or imply official endorsement or affiliation
+     (e.g., do not name your project "XingShu Official", "XingShu Mobile", etc.).
+
+3. Community Forks & Derivative Works
+   If you fork this repository or reuse substantial portions to implement core
+   AstralParty-XingShu features (such as Astral Party launching/component
+   management, in-game runtime tools, mod workshop management, replay analysis,
+   or offline asset encyclopedias):
+   - Clearly state that your release is an independent third-party fork with no
+     official affiliation.
+   - Naming: start the name with "AstralParty-XingShu" or "XingShu" followed by
+     a clear third-party suffix (allowed: "XingShu Community Fork",
+     "XingShu (Bugfix Build)"; not allowed: "XingShu Official", "XingShu 2",
+     "XingShu Pro", "XingShu++", or anything implying an official sequel/edition).
+   - Prominently credit Breezecaresses with a link to the upstream repository on
+     your About page and release page.
+   - Publish your full source code publicly and keep this same license file
+     intact (share-alike).
+
+4. Prohibited Uses
+   - Commercial resale, paywalled builds, paid-group gating, or closed-source
+     repackaging of this project or its derivatives.
+   - Reusing or impersonating official XingShu signing certificates, server
+     credentials, or official platform verification badges.
+   - Injecting malware, stealing user/game credentials, or modifying the project
+     into unfair cheats/exploits for Astral Party.
+
+5. Disclaimer
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED. THE AUTHOR SHALL NOT BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER
+   LIABILITY ARISING FROM THE USE OF THIS SOFTWARE.
+
+---
+
+Plain-Language Note:
+These terms exist to prevent paid reselling, closed-source rip-offs, and fake
+"official" clones. Regular learning, personal tweaking, and honest open-source
+community contributions are completely fine—just give credit when borrowing code.
+
+Questions, exceptions, or feedback:
+- GitHub Issues: https://github.com/Breezecaresses/AstralParty-XingShu/issues
+- QQ Group: 1080908767

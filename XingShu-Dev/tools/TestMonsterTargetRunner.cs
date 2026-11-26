@@ -1,0 +1,887 @@
+﻿using System;
+using System.Collections.Generic;
+using XingShuRuntime.Targeting;
+
+namespace XingShu.Tests
+{
+    internal static class Program
+    {
+        private static int _passedCount = 0;
+        private static int _totalCount = 0;
+
+        private static void AssertCheck(string name, bool condition, string details)
+        {
+            _totalCount++;
+            if (condition)
+            {
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine("  [PASS] " + name);
+                Console.ResetColor();
+                _passedCount++;
+            }
+            else
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("  [FAIL] " + name + " - " + details);
+                Console.ResetColor();
+            }
+        }
+
+        public static int Main(string[] args)
+        {
+            Console.WriteLine("==================================================");
+            Console.WriteLine("MonsterTargetMath + Directional Maximum Dice Preview");
+            Console.WriteLine("==================================================");
+
+            // --- Case 1: 直线单目标（唯一最短距离） ---
+            var c1Input = new TargetPredictionInput
+            {
+                MonsterId = 1L,
+                CurrentNode = 1,
+                MonsterNodeKnown = true,
+                PostMoveNode = 1,
+                PostMoveNodeKnown = true,
+                SearchRange = 3,
+                SearchRangeKnown = true,
+                HasAttackedKnown = true,
+                HasAttackedThisTurn = false,
+                DefaultRouteKnown = false,
+                GraphKnown = true,
+                PlayersKnown = true,
+                GraphEdges = new Dictionary<int, List<int>>
+                {
+                    { 1, new List<int> { 2 } },
+                    { 2, new List<int> { 3 } },
+                    { 3, new List<int> { 4 } }
+                },
+                Players = new List<CandidatePlayer>
+                {
+                    new CandidatePlayer(1001L, 3, 10f, 0, true, true)
+                }
+            };
+            var r1 = MonsterTargetMath.Predict(c1Input);
+            bool c1Ok = r1.TargetPlayerId == 1001L && r1.Distance == 2 && r1.Reason == PredictionReason.NearestTarget && r1.Confidence == PredictionConfidence.High;
+            AssertCheck("Case 1: 直线单目标（唯一最短距离）", c1Ok, string.Format("Target={0}, Dist={1}, Reason={2}", r1.TargetPlayerId, r1.Distance, r1.Reason));
+
+            // --- Case 2: 距离并列，FrontMost 决胜 ---
+            var c2Input = new TargetPredictionInput
+            {
+                MonsterId = 1L,
+                CurrentNode = 1,
+                MonsterNodeKnown = true,
+                PostMoveNode = 1,
+                PostMoveNodeKnown = true,
+                SearchRange = 3,
+                SearchRangeKnown = true,
+                HasAttackedKnown = true,
+                HasAttackedThisTurn = false,
+                DefaultRouteKnown = false,
+                GraphKnown = true,
+                PlayersKnown = true,
+                GraphEdges = new Dictionary<int, List<int>>
+                {
+                    { 1, new List<int> { 2, 4 } },
+                    { 2, new List<int> { 3 } },
+                    { 4, new List<int> { 5 } }
+                },
+                Players = new List<CandidatePlayer>
+                {
+                    new CandidatePlayer(1001L, 3, 50f, 1, true, true), // P1 progress 50
+                    new CandidatePlayer(1002L, 5, 20f, 0, true, true)  // P2 progress 20
+                }
+            };
+            var r2 = MonsterTargetMath.Predict(c2Input);
+            bool c2Ok = r2.TargetPlayerId == 1001L && r2.Distance == 2 && r2.Reason == PredictionReason.FrontMostTieBreak && r2.Confidence == PredictionConfidence.Medium;
+            AssertCheck("Case 2: 距离并列，FrontMost 决胜", c2Ok, string.Format("Target={0}, Dist={1}, Reason={2}", r2.TargetPlayerId, r2.Distance, r2.Reason));
+
+            // --- Case 3: 距离并列，FrontMost 仍并列，同路径无分叉，Slot 决胜 ---
+            var c3Input = new TargetPredictionInput
+            {
+                MonsterId = 1L,
+                CurrentNode = 1,
+                MonsterNodeKnown = true,
+                PostMoveNode = 1,
+                PostMoveNodeKnown = true,
+                SearchRange = 3,
+                SearchRangeKnown = true,
+                HasAttackedKnown = true,
+                HasAttackedThisTurn = false,
+                DefaultRouteKnown = false,
+                GraphKnown = true,
+                PlayersKnown = true,
+                GraphEdges = c1Input.GraphEdges,
+                Players = new List<CandidatePlayer>
+                {
+                    new CandidatePlayer(1001L, 3, 30f, 0, true, true), // Slot 0
+                    new CandidatePlayer(1002L, 3, 30f, 1, true, true)  // Slot 1
+                }
+            };
+            var r3 = MonsterTargetMath.Predict(c3Input);
+            bool c3Ok = r3.TargetPlayerId == 1001L && r3.Distance == 2 && r3.Reason == PredictionReason.SlotTieBreak && r3.Confidence == PredictionConfidence.Medium;
+            AssertCheck("Case 3: 距离并列，FrontMost 仍并列，Slot 决胜", c3Ok, string.Format("Target={0}, Reason={1}", r3.TargetPlayerId, r3.Reason));
+
+            // --- Case 4: 分叉路口 RED 优先 ---
+            var c4Branches = new Dictionary<int, BranchPriorityEntry>
+            {
+                { 1, new BranchPriorityEntry(10, 20, 0) } // 10=RED, 20=BLUE
+            };
+            var c4Input = new TargetPredictionInput
+            {
+                MonsterId = 1L,
+                CurrentNode = 1,
+                MonsterNodeKnown = true,
+                PostMoveNode = 1,
+                PostMoveNodeKnown = true,
+                SearchRange = 3,
+                SearchRangeKnown = true,
+                HasAttackedKnown = true,
+                HasAttackedThisTurn = false,
+                DefaultRouteKnown = false,
+                GraphKnown = true,
+                PlayersKnown = true,
+                GraphEdges = new Dictionary<int, List<int>>
+                {
+                    { 1, new List<int> { 10, 20 } },
+                    { 10, new List<int> { 11 } },
+                    { 20, new List<int> { 21 } }
+                },
+                BranchPriorities = c4Branches,
+                Players = new List<CandidatePlayer>
+                {
+                    new CandidatePlayer(1001L, 11, 25f, 1, true, true), // P1 on RED, slot 1
+                    new CandidatePlayer(1002L, 21, 25f, 0, true, true)  // P2 on BLUE, slot 0
+                }
+            };
+            var r4 = MonsterTargetMath.Predict(c4Input);
+            bool c4Ok = r4.TargetPlayerId == 1001L && r4.Distance == 2 && r4.Reason == PredictionReason.BranchPriorityTieBreak && r4.Confidence == PredictionConfidence.Low;
+            AssertCheck("Case 4: 分叉路口 RED 优先", c4Ok, string.Format("Target={0}, Reason={1}", r4.TargetPlayerId, r4.Reason));
+
+            // --- Case 5: 分叉路口 BLUE 优先（RED 不通/无目标） ---
+            var c5Input = new TargetPredictionInput
+            {
+                MonsterId = 1L,
+                CurrentNode = 1,
+                MonsterNodeKnown = true,
+                PostMoveNode = 1,
+                PostMoveNodeKnown = true,
+                SearchRange = 3,
+                SearchRangeKnown = true,
+                HasAttackedKnown = true,
+                HasAttackedThisTurn = false,
+                DefaultRouteKnown = false,
+                GraphKnown = true,
+                PlayersKnown = true,
+                GraphEdges = new Dictionary<int, List<int>>
+                {
+                    { 1, new List<int> { 10, 20 } },
+                    { 10, new List<int>() }, // dead end
+                    { 20, new List<int> { 21 } }
+                },
+                BranchPriorities = c4Branches,
+                Players = new List<CandidatePlayer>
+                {
+                    new CandidatePlayer(1002L, 21, 25f, 0, true, true) // Only P2 on BLUE
+                }
+            };
+            var r5 = MonsterTargetMath.Predict(c5Input);
+            bool c5Ok = r5.TargetPlayerId == 1002L && r5.Distance == 2 && r5.Reason == PredictionReason.NearestTarget && r5.Confidence == PredictionConfidence.High;
+            AssertCheck("Case 5: 分叉路口 BLUE 优先（RED 不通/无目标）", c5Ok, string.Format("Target={0}, Reason={1}", r5.TargetPlayerId, r5.Reason));
+
+            // --- Case 6: 分叉路口 GREEN 优先（RED/BLUE 不通/无目标） ---
+            var c6Branches = new Dictionary<int, BranchPriorityEntry>
+            {
+                { 1, new BranchPriorityEntry(10, 20, 30) } // 10=RED, 20=BLUE, 30=GREEN
+            };
+            var c6Input = new TargetPredictionInput
+            {
+                MonsterId = 1L,
+                CurrentNode = 1,
+                MonsterNodeKnown = true,
+                PostMoveNode = 1,
+                PostMoveNodeKnown = true,
+                SearchRange = 3,
+                SearchRangeKnown = true,
+                HasAttackedKnown = true,
+                HasAttackedThisTurn = false,
+                DefaultRouteKnown = false,
+                GraphKnown = true,
+                PlayersKnown = true,
+                GraphEdges = new Dictionary<int, List<int>>
+                {
+                    { 1, new List<int> { 10, 20, 30 } },
+                    { 10, new List<int>() },
+                    { 20, new List<int>() },
+                    { 30, new List<int> { 31 } }
+                },
+                BranchPriorities = c6Branches,
+                Players = new List<CandidatePlayer>
+                {
+                    new CandidatePlayer(1003L, 31, 25f, 0, true, true) // Only P3 on GREEN
+                }
+            };
+            var r6 = MonsterTargetMath.Predict(c6Input);
+            bool c6Ok = r6.TargetPlayerId == 1003L && r6.Distance == 2 && r6.Reason == PredictionReason.NearestTarget && r6.Confidence == PredictionConfidence.High;
+            AssertCheck("Case 6: 分叉路口 GREEN 优先（RED/BLUE 不通/无目标）", c6Ok, string.Format("Target={0}, Reason={1}", r6.TargetPlayerId, r6.Reason));
+
+            // --- Case 7: 超出 SearchRange，Fallback 到 DefaultRouteNoTarget ---
+            var c7Input = new TargetPredictionInput
+            {
+                MonsterId = 1L,
+                CurrentNode = 1,
+                MonsterNodeKnown = true,
+                PostMoveNode = 1,
+                PostMoveNodeKnown = true,
+                SearchRange = 3,
+                SearchRangeKnown = true,
+                HasAttackedKnown = true,
+                HasAttackedThisTurn = false,
+                DefaultRouteKnown = true,
+                GraphKnown = true,
+                PlayersKnown = true,
+                GraphEdges = new Dictionary<int, List<int>>
+                {
+                    { 1, new List<int> { 2 } },
+                    { 2, new List<int> { 3 } },
+                    { 3, new List<int> { 4 } },
+                    { 4, new List<int> { 5 } },
+                    { 5, new List<int> { 6 } }
+                },
+                DefaultRoute = new List<int> { 1, 2, 3 },
+                Players = new List<CandidatePlayer>
+                {
+                    new CandidatePlayer(1005L, 6, 60f, 0, true, true) // distance 5 > SearchRange 3
+                }
+            };
+            var r7 = MonsterTargetMath.Predict(c7Input);
+            bool c7Ok = r7.TargetPlayerId == 0L && r7.Reason == PredictionReason.DefaultRouteNoTarget && r7.Confidence == PredictionConfidence.High;
+            AssertCheck("Case 7: 超出 SearchRange，Fallback 到 DefaultRouteNoTarget", c7Ok, string.Format("Target={0}, Reason={1}", r7.TargetPlayerId, r7.Reason));
+
+            // --- Case 8: HasAttackedThisTurn == true，Fallback 到 DefaultRouteAlreadyAttacked ---
+            var c8Input = new TargetPredictionInput
+            {
+                MonsterId = 1L,
+                CurrentNode = 1,
+                MonsterNodeKnown = true,
+                PostMoveNode = 1,
+                PostMoveNodeKnown = true,
+                SearchRange = 3,
+                SearchRangeKnown = true,
+                HasAttackedKnown = true,
+                HasAttackedThisTurn = true, // Monster already attacked
+                DefaultRouteKnown = true,
+                GraphKnown = true,
+                PlayersKnown = true,
+                GraphEdges = c1Input.GraphEdges,
+                DefaultRoute = new List<int> { 1, 2 },
+                Players = c1Input.Players
+            };
+            var r8 = MonsterTargetMath.Predict(c8Input);
+            bool c8Ok = r8.TargetPlayerId == 0L && r8.Reason == PredictionReason.DefaultRouteAlreadyAttacked && r8.Confidence == PredictionConfidence.High;
+            AssertCheck("Case 8: HasAttackedThisTurn == true，Fallback 到 DefaultRouteAlreadyAttacked", c8Ok, string.Format("Target={0}, Reason={1}", r8.TargetPlayerId, r8.Reason));
+
+            // --- Case 9: SearchRange 未知或未决，返回 Unresolved ---
+            var c9Input = new TargetPredictionInput
+            {
+                MonsterId = 1L,
+                CurrentNode = 1,
+                MonsterNodeKnown = true,
+                PostMoveNode = 1,
+                PostMoveNodeKnown = true,
+                SearchRange = 3,
+                SearchRangeKnown = false, // Unknown
+                HasAttackedKnown = true,
+                HasAttackedThisTurn = false,
+                DefaultRouteKnown = false,
+                GraphKnown = true,
+                PlayersKnown = true,
+                GraphEdges = c1Input.GraphEdges,
+                Players = c1Input.Players
+            };
+            var r9 = MonsterTargetMath.Predict(c9Input);
+            bool c9Ok = r9.TargetPlayerId == 0L && r9.Reason == PredictionReason.Unresolved && r9.Confidence == PredictionConfidence.Unresolved;
+            AssertCheck("Case 9: SearchRange 未知或未决，返回 Unresolved", c9Ok, string.Format("Target={0}, Reason={1}", r9.TargetPlayerId, r9.Reason));
+
+            // --- Case 10: 环形拓扑无死循环，正确找到目标 ---
+            var c10Input = new TargetPredictionInput
+            {
+                MonsterId = 1L,
+                CurrentNode = 1,
+                MonsterNodeKnown = true,
+                PostMoveNode = 1,
+                PostMoveNodeKnown = true,
+                SearchRange = 5,
+                SearchRangeKnown = true,
+                HasAttackedKnown = true,
+                HasAttackedThisTurn = false,
+                DefaultRouteKnown = false,
+                GraphKnown = true,
+                PlayersKnown = true,
+                GraphEdges = new Dictionary<int, List<int>>
+                {
+                    { 1, new List<int> { 2 } },
+                    { 2, new List<int> { 3 } },
+                    { 3, new List<int> { 1, 4 } }, // 3 -> 1 cycle, 3 -> 4 path to target
+                    { 4, new List<int>() }
+                },
+                Players = new List<CandidatePlayer>
+                {
+                    new CandidatePlayer(1004L, 4, 10f, 0, true, true)
+                }
+            };
+            var r10 = MonsterTargetMath.Predict(c10Input);
+            string c10PathStr = string.Join("->", r10.Path != null ? r10.Path.ConvertAll(i => i.ToString()).ToArray() : new string[0]);
+            bool c10Ok = r10.TargetPlayerId == 1004L && r10.Distance == 3 && c10PathStr == "1->2->3->4" && r10.Reason == PredictionReason.NearestTarget;
+            AssertCheck("Case 10: 环形拓扑无死循环，正确找到目标", c10Ok, string.Format("Target={0}, Dist={1}, Path={2}", r10.TargetPlayerId, r10.Distance, c10PathStr));
+
+            // --- Case 11: SearchRange Unknown -> Unresolved ---
+            var c11Input = new TargetPredictionInput
+            {
+                MonsterId = 1L,
+                CurrentNode = 1,
+                MonsterNodeKnown = true,
+                PostMoveNode = 1,
+                PostMoveNodeKnown = true,
+                SearchRange = 0,
+                SearchRangeKnown = false, // Unknown
+                HasAttackedKnown = true,
+                HasAttackedThisTurn = false,
+                GraphKnown = true,
+                PlayersKnown = true,
+                GraphEdges = c1Input.GraphEdges,
+                Players = c1Input.Players
+            };
+            var r11 = MonsterTargetMath.Predict(c11Input);
+            bool c11Ok = r11.TargetPlayerId == 0L && r11.Reason == PredictionReason.Unresolved && r11.Confidence == PredictionConfidence.Unresolved;
+            AssertCheck("Case 11: SearchRange Unknown -> Unresolved", c11Ok, string.Format("Reason={0}, Confidence={1}", r11.Reason, r11.Confidence));
+
+            // --- Case 12: HasAttacked Unknown -> Unresolved ---
+            var c12Input = new TargetPredictionInput
+            {
+                MonsterId = 1L,
+                CurrentNode = 1,
+                MonsterNodeKnown = true,
+                PostMoveNode = 1,
+                PostMoveNodeKnown = true,
+                SearchRange = 3,
+                SearchRangeKnown = true,
+                HasAttackedKnown = false, // Unknown
+                HasAttackedThisTurn = false,
+                GraphKnown = true,
+                PlayersKnown = true,
+                GraphEdges = c1Input.GraphEdges,
+                Players = c1Input.Players
+            };
+            var r12 = MonsterTargetMath.Predict(c12Input);
+            bool c12Ok = r12.TargetPlayerId == 0L && r12.Reason == PredictionReason.Unresolved && r12.Confidence == PredictionConfidence.Unresolved;
+            AssertCheck("Case 12: HasAttacked Unknown -> Unresolved", c12Ok, string.Format("Reason={0}, Confidence={1}", r12.Reason, r12.Confidence));
+
+            // --- Case 13: PostMoveNode Unknown -> Unresolved ---
+            var c13Input = new TargetPredictionInput
+            {
+                MonsterId = 1L,
+                CurrentNode = 1,
+                MonsterNodeKnown = true,
+                PostMoveNode = 0,
+                PostMoveNodeKnown = false, // Unknown
+                SearchRange = 3,
+                SearchRangeKnown = true,
+                HasAttackedKnown = true,
+                HasAttackedThisTurn = false,
+                GraphKnown = true,
+                PlayersKnown = true,
+                GraphEdges = c1Input.GraphEdges,
+                Players = c1Input.Players
+            };
+            var r13 = MonsterTargetMath.Predict(c13Input);
+            bool c13Ok = r13.TargetPlayerId == 0L && r13.Reason == PredictionReason.Unresolved && r13.Confidence == PredictionConfidence.Unresolved;
+            AssertCheck("Case 13: PostMoveNode Unknown -> Unresolved", c13Ok, string.Format("Reason={0}, Confidence={1}", r13.Reason, r13.Confidence));
+
+            // --- Case 14: Branch Mapping Missing (不同分支路径但无 BranchPriorityEntry -> 严禁使用 SlotTieBreak，必须 Unresolved) ---
+            var c14Input = new TargetPredictionInput
+            {
+                MonsterId = 1L,
+                CurrentNode = 1,
+                MonsterNodeKnown = true,
+                PostMoveNode = 1,
+                PostMoveNodeKnown = true,
+                SearchRange = 3,
+                SearchRangeKnown = true,
+                HasAttackedKnown = true,
+                HasAttackedThisTurn = false,
+                GraphKnown = true,
+                PlayersKnown = true,
+                GraphEdges = new Dictionary<int, List<int>>
+                {
+                    { 1, new List<int> { 10, 20 } },
+                    { 10, new List<int> { 11 } },
+                    { 20, new List<int> { 21 } }
+                },
+                BranchPriorities = null, // Missing mapping!
+                Players = new List<CandidatePlayer>
+                {
+                    new CandidatePlayer(1001L, 11, 25f, 1, true, true), // P1 on branch 10, slot 1
+                    new CandidatePlayer(1002L, 21, 25f, 0, true, true)  // P2 on branch 20, slot 0
+                }
+            };
+            var r14 = MonsterTargetMath.Predict(c14Input);
+            bool c14Ok = r14.TargetPlayerId == 0L && r14.Reason == PredictionReason.Unresolved && r14.Confidence == PredictionConfidence.Unresolved && r14.Reason != PredictionReason.SlotTieBreak;
+            AssertCheck("Case 14: Branch Mapping Missing -> Unresolved (严禁 SlotTieBreak)", c14Ok, string.Format("Target={0}, Reason={1}, Confidence={2}", r14.TargetPlayerId, r14.Reason, r14.Confidence));
+
+            // --- Case 15: Branch Mapping Known 且全平局 -> 允许 SlotTieBreak ---
+            var c15Branches = new Dictionary<int, BranchPriorityEntry>
+            {
+                { 1, new BranchPriorityEntry(10, 20, 0) } // Node 1 mapped: 10=RED(0), 20=BLUE(1)
+            };
+            var c15Input = new TargetPredictionInput
+            {
+                MonsterId = 1L,
+                CurrentNode = 1,
+                MonsterNodeKnown = true,
+                PostMoveNode = 1,
+                PostMoveNodeKnown = true,
+                SearchRange = 3,
+                SearchRangeKnown = true,
+                HasAttackedKnown = true,
+                HasAttackedThisTurn = false,
+                GraphKnown = true,
+                PlayersKnown = true,
+                GraphEdges = new Dictionary<int, List<int>>
+                {
+                    { 1, new List<int> { 10, 20 } },
+                    { 10, new List<int> { 11 } },
+                    { 20, new List<int> { 21 } }
+                },
+                BranchPriorities = c15Branches,
+                Players = new List<CandidatePlayer>
+                {
+                    // 两位玩家均在 RED 分支终点 11（已知且分支得分全为 0 平局）
+                    new CandidatePlayer(1001L, 11, 25f, 1, true, true), // Slot 1
+                    new CandidatePlayer(1002L, 11, 25f, 0, true, true)  // Slot 0
+                }
+            };
+            var r15 = MonsterTargetMath.Predict(c15Input);
+            bool c15Ok = r15.TargetPlayerId == 1002L && r15.Reason == PredictionReason.SlotTieBreak && r15.Confidence == PredictionConfidence.Medium;
+            AssertCheck("Case 15: Branch Mapping Known 且全平局 -> 允许 SlotTieBreak", c15Ok, string.Format("Target={0}, Reason={1}, Confidence={2}", r15.TargetPlayerId, r15.Reason, r15.Confidence));
+
+            // --- Case 16: Known HasAttacked = false -> 正常流程 ---
+            var c16Input = new TargetPredictionInput
+            {
+                MonsterId = 1L,
+                CurrentNode = 1,
+                MonsterNodeKnown = true,
+                PostMoveNode = 1,
+                PostMoveNodeKnown = true,
+                SearchRange = 3,
+                SearchRangeKnown = true,
+                HasAttackedKnown = true, // Known
+                HasAttackedThisTurn = false, // Not attacked
+                GraphKnown = true,
+                PlayersKnown = true,
+                GraphEdges = c1Input.GraphEdges,
+                Players = c1Input.Players
+            };
+            var r16 = MonsterTargetMath.Predict(c16Input);
+            bool c16Ok = r16.TargetPlayerId == 1001L && r16.Distance == 2 && r16.Reason == PredictionReason.NearestTarget && r16.Confidence == PredictionConfidence.High;
+            AssertCheck("Case 16: Known HasAttacked = false -> 正常流程", c16Ok, string.Format("Target={0}, Dist={1}, Reason={2}", r16.TargetPlayerId, r16.Distance, r16.Reason));
+
+            // --- Case 17: GraphKnown = false 但 GraphEdges 有数据 -> Unresolved ---
+            var c17Input = new TargetPredictionInput
+            {
+                MonsterId = 1L,
+                CurrentNode = 1,
+                MonsterNodeKnown = true,
+                PostMoveNode = 1,
+                PostMoveNodeKnown = true,
+                SearchRange = 3,
+                SearchRangeKnown = true,
+                HasAttackedKnown = true,
+                HasAttackedThisTurn = false,
+                GraphKnown = false, // False!
+                PlayersKnown = true,
+                GraphEdges = c1Input.GraphEdges,
+                Players = c1Input.Players
+            };
+            var r17 = MonsterTargetMath.Predict(c17Input);
+            bool c17Ok = r17.TargetPlayerId == 0L && r17.Reason == PredictionReason.Unresolved && r17.Confidence == PredictionConfidence.Unresolved;
+            AssertCheck("Case 17: GraphKnown = false 但 GraphEdges 有数据 -> Unresolved", c17Ok, string.Format("Reason={0}, Confidence={1}", r17.Reason, r17.Confidence));
+
+            // --- Case 18: MonsterNodeKnown = false -> Unresolved ---
+            var c18Input = new TargetPredictionInput
+            {
+                MonsterId = 1L,
+                CurrentNode = 1,
+                MonsterNodeKnown = false, // False!
+                PostMoveNode = 1,
+                PostMoveNodeKnown = true,
+                SearchRange = 3,
+                SearchRangeKnown = true,
+                HasAttackedKnown = true,
+                HasAttackedThisTurn = false,
+                GraphKnown = true,
+                PlayersKnown = true,
+                GraphEdges = c1Input.GraphEdges,
+                Players = c1Input.Players
+            };
+            var r18 = MonsterTargetMath.Predict(c18Input);
+            bool c18Ok = r18.TargetPlayerId == 0L && r18.Reason == PredictionReason.Unresolved && r18.Confidence == PredictionConfidence.Unresolved;
+            AssertCheck("Case 18: MonsterNodeKnown = false -> Unresolved", c18Ok, string.Format("Reason={0}, Confidence={1}", r18.Reason, r18.Confidence));
+
+            // --- Case 19: PlayersKnown = false 且 Players 为空 -> Unresolved (严禁误判为 DefaultRouteNoTarget) ---
+            var c19Input = new TargetPredictionInput
+            {
+                MonsterId = 1L,
+                CurrentNode = 1,
+                MonsterNodeKnown = true,
+                PostMoveNode = 1,
+                PostMoveNodeKnown = true,
+                SearchRange = 3,
+                SearchRangeKnown = true,
+                HasAttackedKnown = true,
+                HasAttackedThisTurn = false,
+                GraphKnown = true,
+                PlayersKnown = false, // False!
+                GraphEdges = c1Input.GraphEdges,
+                DefaultRouteKnown = true,
+                DefaultRoute = new List<int> { 1, 2 },
+                Players = new List<CandidatePlayer>() // Empty list
+            };
+            var r19 = MonsterTargetMath.Predict(c19Input);
+            bool c19Ok = r19.TargetPlayerId == 0L && r19.Reason == PredictionReason.Unresolved && r19.Confidence == PredictionConfidence.Unresolved && r19.Reason != PredictionReason.DefaultRouteNoTarget;
+            AssertCheck("Case 19: PlayersKnown = false 且 Players empty -> Unresolved (严禁 DefaultRouteNoTarget)", c19Ok, string.Format("Reason={0}, Confidence={1}", r19.Reason, r19.Confidence));
+
+            // --- Case 20: PlayersKnown = true 且已知没有有效玩家 -> DefaultRouteNoTarget ---
+            var c20Input = new TargetPredictionInput
+            {
+                MonsterId = 1L,
+                CurrentNode = 1,
+                MonsterNodeKnown = true,
+                PostMoveNode = 1,
+                PostMoveNodeKnown = true,
+                SearchRange = 3,
+                SearchRangeKnown = true,
+                HasAttackedKnown = true,
+                HasAttackedThisTurn = false,
+                GraphKnown = true,
+                PlayersKnown = true, // Known!
+                DefaultRouteKnown = true,
+                DefaultRoute = new List<int> { 1, 2 },
+                GraphEdges = c1Input.GraphEdges,
+                Players = new List<CandidatePlayer>() // Empty known list
+            };
+            var r20 = MonsterTargetMath.Predict(c20Input);
+            bool c20Ok = r20.TargetPlayerId == 0L && r20.Reason == PredictionReason.DefaultRouteNoTarget && r20.Confidence == PredictionConfidence.High;
+            AssertCheck("Case 20: PlayersKnown = true 且已知没有有效玩家 -> DefaultRouteNoTarget", c20Ok, string.Format("Reason={0}, Confidence={1}", r20.Reason, r20.Confidence));
+
+            // --- Case 21: 距离并列，一个候选 RouteProgressKnown = false -> Unresolved (前级证据缺失严禁跳级) ---
+            var c21Input = new TargetPredictionInput
+            {
+                MonsterId = 1L,
+                CurrentNode = 1,
+                MonsterNodeKnown = true,
+                PostMoveNode = 1,
+                PostMoveNodeKnown = true,
+                SearchRange = 3,
+                SearchRangeKnown = true,
+                HasAttackedKnown = true,
+                HasAttackedThisTurn = false,
+                GraphKnown = true,
+                PlayersKnown = true,
+                GraphEdges = c2Input.GraphEdges,
+                Players = new List<CandidatePlayer>
+                {
+                    new CandidatePlayer(1001L, 3, 50f, true, 1, true, true, true), // Known progress
+                    new CandidatePlayer(1002L, 5, 20f, false, 0, true, true, true)  // RouteProgressKnown = false!
+                }
+            };
+            var r21 = MonsterTargetMath.Predict(c21Input);
+            bool c21Ok = r21.TargetPlayerId == 0L && r21.Reason == PredictionReason.Unresolved && r21.Confidence == PredictionConfidence.Unresolved;
+            AssertCheck("Case 21: 距离并列，候选 RouteProgressKnown = false -> Unresolved", c21Ok, string.Format("Reason={0}, Confidence={1}", r21.Reason, r21.Confidence));
+
+            // --- Case 22: 需要 SlotTieBreak，一个候选 SlotKnown = false -> Unresolved (严禁数组 index fallback) ---
+            var c22Input = new TargetPredictionInput
+            {
+                MonsterId = 1L,
+                CurrentNode = 1,
+                MonsterNodeKnown = true,
+                PostMoveNode = 1,
+                PostMoveNodeKnown = true,
+                SearchRange = 3,
+                SearchRangeKnown = true,
+                HasAttackedKnown = true,
+                HasAttackedThisTurn = false,
+                GraphKnown = true,
+                PlayersKnown = true,
+                GraphEdges = c1Input.GraphEdges,
+                Players = new List<CandidatePlayer>
+                {
+                    new CandidatePlayer(1001L, 3, 30f, true, 0, true, true, true),  // SlotKnown = true
+                    new CandidatePlayer(1002L, 3, 30f, true, -1, false, true, true) // SlotKnown = false!
+                }
+            };
+            var r22 = MonsterTargetMath.Predict(c22Input);
+            bool c22Ok = r22.TargetPlayerId == 0L && r22.Reason == PredictionReason.Unresolved && r22.Confidence == PredictionConfidence.Unresolved && r22.Reason != PredictionReason.SlotTieBreak;
+            AssertCheck("Case 22: 需要 SlotTieBreak，候选 SlotKnown = false -> Unresolved", c22Ok, string.Format("Reason={0}, Confidence={1}", r22.Reason, r22.Confidence));
+
+            // --- Case 23: HasAttackedKnown = true 且 HasAttackedThisTurn = true，即使 SearchRangeKnown = false 也返回 DefaultRouteAlreadyAttacked ---
+            var c23Input = new TargetPredictionInput
+            {
+                MonsterId = 1L,
+                CurrentNode = 1,
+                MonsterNodeKnown = true,
+                PostMoveNode = 1,
+                PostMoveNodeKnown = true,
+                SearchRange = 0,
+                SearchRangeKnown = false, // SearchRange is unknown!
+                HasAttackedKnown = true,
+                HasAttackedThisTurn = true, // Monster already attacked!
+                DefaultRouteKnown = true,
+                DefaultRoute = new List<int> { 1, 2 },
+                GraphKnown = false,
+                PlayersKnown = false,
+                GraphEdges = null,
+                Players = null
+            };
+            var r23 = MonsterTargetMath.Predict(c23Input);
+            bool c23Ok = r23.TargetPlayerId == 0L && r23.Reason == PredictionReason.DefaultRouteAlreadyAttacked && r23.Confidence == PredictionConfidence.High;
+            AssertCheck("Case 23: HasAttacked=True + SearchRange=Unknown -> DefaultRouteAlreadyAttacked", c23Ok, string.Format("Reason={0}, Confidence={1}", r23.Reason, r23.Confidence));
+
+            // --- Case 24: long MonsterId roundtrip (> Int32.MaxValue) 验证无截断 ---
+            long largeMonsterId = 5000000000L; // > Int32.MaxValue (2147483647)
+            var c24Input = new TargetPredictionInput
+            {
+                MonsterId = largeMonsterId,
+                CurrentNode = 1,
+                MonsterNodeKnown = true,
+                PostMoveNode = 1,
+                PostMoveNodeKnown = true,
+                SearchRange = 3,
+                SearchRangeKnown = true,
+                HasAttackedKnown = true,
+                HasAttackedThisTurn = false,
+                GraphKnown = true,
+                PlayersKnown = true,
+                GraphEdges = c1Input.GraphEdges,
+                Players = c1Input.Players
+            };
+            var r24 = MonsterTargetMath.Predict(c24Input);
+            bool c24Ok = r24.MonsterId == largeMonsterId && r24.TargetPlayerId == 1001L;
+            AssertCheck("Case 24: long MonsterId roundtrip (> Int32.MaxValue) 验证无截断", c24Ok, string.Format("MonsterId={0}", r24.MonsterId));
+
+            RunMaximumDicePreviewTests();
+            RunDirectionTests();
+
+            Console.WriteLine("==================================================");
+            Console.WriteLine(string.Format("Results: {0} / {1} Passed", _passedCount, _totalCount));
+            Console.WriteLine("==================================================");
+
+            return _passedCount == _totalCount ? 0 : 1;
+        }
+
+        private static void RunDirectionTests()
+        {
+            var graph = new Dictionary<int, List<int>>();
+            for (int node = 1; node <= 12; node++)
+            {
+                graph[node] = new List<int>();
+                if (node > 1) graph[node].Add(node - 1);
+                if (node < 12) graph[node].Add(node + 1);
+            }
+            var input = new TargetPredictionInput
+            {
+                MonsterId = 7, CurrentNode = 3, MonsterNodeKnown = true,
+                GraphKnown = true, PlayersKnown = true, GraphEdges = graph,
+                Players = new[] { new CandidatePlayer(10, 1, 0, false, 0, true, true, true) }
+            };
+            var behind = MonsterTargetPreview.Calculate(input, new[] { 4 });
+            AssertCheck("Case 34: 前向箭头不索敌身后玩家", behind.IsValid && behind.Candidates.Count == 0, "search reversed after the mandatory first move");
+            input.Players = new[] { new CandidatePlayer(10, 5, 0, false, 0, true, true, true) };
+            var ahead = MonsterTargetPreview.Calculate(input, new[] { 4 });
+            AssertCheck("Case 35: 双向邻接仍能沿箭头找到前方目标", ahead.Candidates.Count == 1 && ahead.Candidates[0].Distance == 2, "forward target lost");
+            var reversed = MonsterTargetPreview.Calculate(input, new[] { 2 });
+            AssertCheck("Case 36: 箭头反向后不沿旧方向找玩家", reversed.IsValid && reversed.Candidates.Count == 0, "old facing was retained");
+            input.Players = new[] { new CandidatePlayer(10, 3, 0, false, 0, true, true, true) };
+            var originalTile = MonsterTargetPreview.Calculate(input, new[] { 4 });
+            AssertCheck("Case 37: 先行一格后不掉头攻击原格玩家", originalTile.IsValid && originalTile.Candidates.Count == 0, "post-move search returned to the original tile");
+
+            // A genuine forward loop can approach a previously visited tile from
+            // another edge. Node-only visitation would incorrectly prune this route.
+            input.CurrentNode = 9;
+            input.GraphEdges = new Dictionary<int, List<int>>
+            {
+                { 9, new List<int> { 1, 10 } }, { 10, new List<int> { 9 } },
+                { 1, new List<int> { 9, 2, 3 } }, { 2, new List<int> { 1, 3 } },
+                { 3, new List<int> { 2, 1 } }
+            };
+            input.Players = new[] { new CandidatePlayer(10, 10, 0, false, 0, true, true, true) };
+            var loop = MonsterTargetPreview.Calculate(input, new[] { 1 });
+            AssertCheck("Case 38: 环路允许沿前向绕行，不能把掉头当捷径", loop.Candidates.Count == 1 && loop.Candidates[0].Distance == 6, "route state collapsed or illegal reverse shortcut used");
+            input.CurrentNode = 1;
+            input.GraphEdges = graph;
+            input.Players = new[] { new CandidatePlayer(10, 11, 0, false, 0, true, true, true) };
+            var ten = MonsterTargetPreview.Calculate(input, new[] { 2 });
+            input.Players = new[] { new CandidatePlayer(10, 12, 0, false, 0, true, true, true) };
+            var eleven = MonsterTargetPreview.Calculate(input, new[] { 2 });
+            AssertCheck("Case 39: 有来向的双向地图仍严格限制10格", ten.Candidates.Count == 1 && ten.Candidates[0].Distance == 10 && eleven.Candidates.Count == 0, "directional range boundary incorrect");
+            input.Players = new[] { new CandidatePlayer(10, 2, 0, false, 0, true, true, true) };
+            var one = MonsterTargetPreview.Calculate(input, new[] { 2 }, 1);
+            AssertCheck("Case 40: 前向首格目标不需要额外一步", one.Candidates.Count == 1 && one.Candidates[0].Distance == 1, "first step target lost");
+            input.CurrentNode = 3;
+            input.PostMoveNode = 4;
+            input.PostMoveNodeKnown = input.SearchRangeKnown = input.HasAttackedKnown = true;
+            input.SearchRange = 9;
+            input.Players = new[] { new CandidatePlayer(10, 1, 0, false, 0, true, true, true) };
+            var prediction = MonsterTargetMath.Predict(input);
+            AssertCheck("Case 41: 单目标预测同样排除首步之后的回头路", prediction.TargetPlayerId == 0 && prediction.Reason == PredictionReason.DefaultRouteNoTarget, "single-target engine reversed direction");
+        }
+
+        private static void RunMaximumDicePreviewTests()
+        {
+            var graph = new Dictionary<int, List<int>>();
+            for (int node = 1; node <= 12; node++) graph[node] = node < 12 ? new List<int> { node + 1 } : new List<int>();
+            var input = new TargetPredictionInput
+            {
+                MonsterId = 5000000000L, CurrentNode = 1, MonsterNodeKnown = true,
+                GraphKnown = true, PlayersKnown = true, GraphEdges = graph,
+                Players = new List<CandidatePlayer> { new CandidatePlayer(9000000000L, 11, 0f, false, 0, true, true, true) }
+            };
+            var edge = MonsterTargetPreview.Calculate(input, new[] { 2 });
+            AssertCheck("Case 25: 最大10格含先行1格，边界目标可达", edge.IsValid && edge.Candidates.Count == 1 && edge.Candidates[0].Distance == 10 && edge.Candidates[0].Path.Count == 11, "10-step boundary failed");
+
+            input.Players = new[] { new CandidatePlayer(1001L, 12, 0f, false, 0, true, true, true) };
+            var outside = MonsterTargetPreview.Calculate(input, new[] { 2 });
+            AssertCheck("Case 26: 第11格不误报为10格内", outside.IsValid && outside.Candidates.Count == 0, "budget off by one");
+
+            var fork = new Dictionary<int, List<int>>
+            {
+                { 1, new List<int> { 2, 3 } }, { 2, new List<int> { 4 } },
+                { 3, new List<int> { 5 } }, { 4, new List<int>() }, { 5, new List<int>() }
+            };
+            input.GraphEdges = fork;
+            input.Players = new[]
+            {
+                new CandidatePlayer(1001L, 4, 0f, false, 0, true, true, true),
+                new CandidatePlayer(1002L, 5, 0f, false, 1, true, true, true)
+            };
+            var branches = MonsterTargetPreview.Calculate(input, new[] { 2, 3 });
+            AssertCheck("Case 27: 未映射岔路保留不同目标", branches.IsValid && branches.AmbiguousFirstStep && branches.Candidates.Count == 2, "fork was guessed");
+
+            input.GraphEdges = new Dictionary<int, List<int>> { { 1, new List<int> { 2 } }, { 2, new List<int> { 4, 5 } }, { 4, new List<int>() }, { 5, new List<int>() } };
+            var tied = MonsterTargetPreview.Calculate(input, new[] { 2 });
+            AssertCheck("Case 28: 同距离且位置靠前未知，保留双方", tied.TiedTargets && tied.Candidates.Count == 2 && tied.Candidates.TrueForAll(p => p.Confidence == PredictionConfidence.Unresolved), "tie collapsed");
+
+            input.Players = new[] { new CandidatePlayer(1001L, 4, 0f, false, 0, true, false, true), new CandidatePlayer(1002L, 5, 0f, false, 1, true, true, true) };
+            var dead = MonsterTargetPreview.Calculate(input, new[] { 2 });
+            AssertCheck("Case 29: 死亡玩家不参与索敌", dead.Candidates.Count == 1 && dead.Candidates[0].TargetPlayerId == 1002L, "dead target included");
+
+            input.HasAttackedKnown = input.HasAttackedThisTurn = true;
+            var attacked = MonsterTargetPreview.Calculate(input, null);
+            AssertCheck("Case 30: 本回合已攻击时停止追击推演", attacked.IsValid && attacked.AlreadyAttacked && attacked.Candidates.Count == 0, "attack state ignored");
+            input.HasAttackedKnown = input.HasAttackedThisTurn = false;
+            var invalid = MonsterTargetPreview.Calculate(input, new[] { 99 });
+            AssertCheck("Case 31: 非邻接或缺失首步不当作当前格", !invalid.IsValid && invalid.Candidates.Count == 0, "invalid first step accepted");
+
+            input.GraphEdges = fork;
+            input.Players = new[] { new CandidatePlayer(1001L, 4, 0f, false, 0, true, true, true) };
+            var partial = MonsterTargetPreview.Calculate(input, new[] { 2, 3, 2 });
+            AssertCheck("Case 32: 部分岔路无目标时保留不确定性", partial.AmbiguousFirstStep && partial.SomeRoutesHaveNoTarget && partial.Candidates.Count == 1 && partial.HasUncertainTarget && !partial.HasSingleTargetGroup, "partial fork uncertainty lost");
+
+            input.Players = new[] { new CandidatePlayer(1001L, 2, 0f, false, 0, true, true, true) };
+            var firstStep = MonsterTargetPreview.Calculate(input, new[] { 2 }, 1);
+            AssertCheck("Case 33: 首步即到目标且无剩余步数", firstStep.IsValid && firstStep.Candidates.Count == 1 && firstStep.Candidates[0].Distance == 1, "zero remaining budget failed");
+
+            // Occupants are one attack group; a farther tile never becomes a second attack.
+            input.GraphEdges = new Dictionary<int, List<int>> { { 0, new List<int> { 1 } }, { 1, new List<int> { 0, 2 } }, { 2, new List<int> { 1, 3 } }, { 3, new List<int> { 2 } } };
+            input.CurrentNode = 0;
+            for (int count = 2; count <= 4; count++)
+            {
+                var players = new List<CandidatePlayer>();
+                for (int i = 0; i < count; i++) players.Add(new CandidatePlayer(1001L + i, 1, 0f, false, i, true, true, true));
+                players.Add(new CandidatePlayer(9999L, 2, 0f, false, 3, true, true, true)); input.Players = players;
+                var group = MonsterTargetPreview.Calculate(input, new[] { 1 });
+                AssertCheck("同格全体 " + count + "人仅为一个目标格", group.Candidates.Count == count && group.TargetTileCount == 1 && !group.TiedTargets && group.Candidates.TrueForAll(p => p.TargetNodeId == 1), "occupants split or farther tile selected");
+            }
+            input.CurrentNode = 1;
+            input.Players = new[] { new CandidatePlayer(1001L, 0, 0, false, 0, true, true, true) };
+            var zero = MonsterTargetPreview.Calculate(input, new[] { 0 });
+            AssertCheck("编号0的地块可作为出口和目标格", zero.Candidates.Count == 1 && zero.Candidates[0].Distance == 1, "node zero rejected");
+            input.CurrentNode = 0;
+            input.GraphEdges = new Dictionary<int, List<int>> { {0,new List<int>{1}}, {1,new List<int>{0,2,3}}, {2,new List<int>{1,4}}, {3,new List<int>{1,5}}, {4,new List<int>{2}}, {5,new List<int>{3}} };
+            input.BranchPriorities = new Dictionary<int, BranchPriorityEntry> { {1,new BranchPriorityEntry(2,3,0)} };
+            input.Players = new[] { new CandidatePlayer(1001L,4,0,false,0,true,true,true), new CandidatePlayer(1002L,5,0,false,1,true,true,true) };
+            var red = MonsterTargetPreview.Calculate(input,new[]{1});
+            AssertCheck("同距岔路红优先于蓝", red.Candidates.Count == 1 && red.Candidates[0].TargetPlayerId == 1001 && !red.TiedTargets, "priority ignored");
+            input.Players = new[] { new CandidatePlayer(1001L,4,0,false,0,true,true,true), new CandidatePlayer(1002L,3,0,false,1,true,true,true) };
+            var near = MonsterTargetPreview.Calculate(input,new[]{1});
+            AssertCheck("最近格优先于更远红色路线", near.Candidates.Count == 1 && near.Candidates[0].TargetPlayerId == 1002, "colour overrode distance");
+            input.BranchPriorities = new Dictionary<int,BranchPriorityEntry> { {1,new BranchPriorityEntry(0,3,2)} };
+            input.Players = new[] { new CandidatePlayer(1001L,2,0,false,0,true,true,true),new CandidatePlayer(1002L,3,0,false,1,true,true,true) };
+            var blue = MonsterTargetPreview.Calculate(input,new[]{1});
+            AssertCheck("红色为来路时不掉头，蓝优先于绿", blue.Candidates.Count == 1 && blue.Candidates[0].TargetPlayerId == 1002, "incoming red used");
+            var priorities = new Dictionary<int,BranchPriorityEntry> { {1,new BranchPriorityEntry(2,3,4)}, {2,new BranchPriorityEntry(5,6,7)} };
+            AssertCheck("嵌套岔路比较真正分叉处", MonsterTargetMath.ComparePaths(new[]{0,1,2,5},new[]{0,1,2,6},priorities)<0 && MonsterTargetMath.ComparePaths(new[]{0,1,2,7},new[]{0,1,3,8},priorities)<0, "nested route priorities flattened");
+
+            input.CurrentNode = 0;
+            input.BranchPriorities = null;
+            input.GraphEdges = new Dictionary<int,List<int>> {
+                {0,new List<int>{1,2}}, {1,new List<int>{0,3}}, {2,new List<int>{0,3}},
+                {3,new List<int>{1,2,4}}, {4,new List<int>{3,5}}, {5,new List<int>{4}}
+            };
+            input.Players = new[] {
+                new CandidatePlayer(1001L,3,0,false,0,true,true,true),
+                new CandidatePlayer(1003L,3,0,false,2,true,true,true),
+                new CandidatePlayer(1002L,4,0,false,1,true,true,true)
+            };
+            var mergedGroup = MonsterTargetPreview.Calculate(input,new[]{1,2});
+            AssertCheck("多箭头汇合到同格全体，不显示互斥候选", mergedGroup.Candidates.Count == 2 && mergedGroup.AmbiguousFirstStep && mergedGroup.HasSingleTargetGroup && !mergedGroup.HasUncertainTarget && mergedGroup.Candidates.TrueForAll(p=>p.TargetNodeId==3), "route ambiguity was confused with target ambiguity");
+            AssertCheck("同格全体停止在最近格，不继续到更远玩家", !mergedGroup.Candidates.Exists(p=>p.TargetPlayerId==1002L), "farther tile joined the attack group");
+
+            input.GraphEdges = new Dictionary<int,List<int>> {
+                {0,new List<int>{1,2}}, {1,new List<int>{0,3}}, {2,new List<int>{0,4}},
+                {4,new List<int>{2,3}}, {3,new List<int>{1,4}}
+            };
+            input.Players = new[] {
+                new CandidatePlayer(1001L,3,0,false,0,true,true,true),
+                new CandidatePlayer(1003L,3,0,false,2,true,true,true)
+            };
+            var unequalRoutes = MonsterTargetPreview.Calculate(input,new[]{1,2});
+            AssertCheck("同目标组但路线长度不同，仍保留路线未决状态", unequalRoutes.HasSingleTargetGroup && unequalRoutes.AmbiguousFirstStep && !unequalRoutes.HasUncertainTarget, "route ambiguity was lost or occupants became mutually exclusive");
+
+            input.GraphEdges = new Dictionary<int,List<int>> {
+                {0,new List<int>{1,2}}, {1,new List<int>{0,3}}, {2,new List<int>{0,4}},
+                {3,new List<int>{1}}, {4,new List<int>{2}}
+            };
+            input.Players = new[] {
+                new CandidatePlayer(1001L,3,0,false,0,true,true,true),
+                new CandidatePlayer(1002L,4,0,false,1,true,true,true)
+            };
+            var separateRoutes = MonsterTargetPreview.Calculate(input,new[]{1,2});
+            AssertCheck("多箭头去往不同目标格，继续显示候选", separateRoutes.TargetTileCount == 2 && separateRoutes.HasUncertainTarget && !separateRoutes.HasSingleTargetGroup, "different target tiles incorrectly confirmed");
+            var attack = new MonsterAttackWindow(); attack.ObserveTurn(1,5000000000L);attack.ObserveAttack(5000000000L);attack.ObserveTurn(1,0);
+            AssertCheck("攻击后临时空行动者不会重新索敌", attack.HasAttacked(5000000000L,1), "attack lost on transient zero");
+            attack.ObserveTurn(2,5000000000L);
+            AssertCheck("新一轮同怪物允许重新索敌", !attack.HasAttacked(5000000000L,2), "attack leaked between rounds");
+            attack.ObserveAttack(5000000000L);attack.ObserveTurn(2,1001);
+            AssertCheck("下一行动者清除上次攻击窗口", !attack.HasAttacked(5000000000L,2), "attack leaked into next turn");
+            attack.Clear();
+            AssertCheck("退出房间清除攻击状态", !attack.HasAttacked(5000000000L,2), "attack leaked into next room");
+            int forkCount=0;
+            foreach (int scene in new[]{7,8,10,12,13,14,15,16,17})
+            {
+                var graphFixture = new Dictionary<int,List<int>>();
+                foreach (string line in System.IO.File.ReadAllLines(System.IO.Path.Combine("XingShu-Dev/tools/TargetingFixtures", "scene_"+scene+".txt")))
+                {
+                    var pair=line.Split(':');var exits=new List<int>();
+                    foreach(string n in pair[1].Split(',')) if(n.Length>0) exits.Add(int.Parse(n));
+                    graphFixture[int.Parse(pair[0])]=exits;
+                }
+                var profile=MonsterBranchProfiles.Match(graphFixture);forkCount+=profile.Count;
+                AssertCheck("官方场景"+scene+"完整拓扑匹配参考颜色",profile.Count>0,"profile missing");
+                graphFixture[0].Reverse();
+                AssertCheck("场景"+scene+"不依赖邻接数组顺序",MonsterBranchProfiles.Match(graphFixture).Count==profile.Count,"order mistaken for colour");
+                graphFixture[0].Add(9999);
+                AssertCheck("场景"+scene+"结构变动停用旧顺位",MonsterBranchProfiles.Match(graphFixture).Count==0,"changed map accepted");
+            }
+            AssertCheck("参考地图共46个岔路",forkCount==46,"fork coverage mismatch");
+        }
+    }
+}

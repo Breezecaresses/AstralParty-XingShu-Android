@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <!-- Celestial Sapphire Squircle Gradient -->
+    <linearGradient id="tile-grad" x1="12%" y1="6%" x2="88%" y2="94%">
+      <stop offset="0%" stop-color="#3498ff" />
+      <stop offset="48%" stop-color="#1370f3" />
+      <stop offset="100%" stop-color="#0a47ba" />
+    </linearGradient>
+
+    <!-- Delicate Top-Left Radial Highlight -->
+    <radialGradient id="tile-highlight" cx="28%" cy="22%" r="64%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.28" />
+      <stop offset="45%" stop-color="#9ad4ff" stop-opacity="0.09" />
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0" />
+    </radialGradient>
+
+    <!-- Precision Astrolabe Orbit Gradients (Seamless Opacity Match at Horizon Vertices) -->
+    <linearGradient id="rear-orbit-grad" x1="59" y1="256" x2="453" y2="256" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#d8ecff" stop-opacity="0.44" />
+      <stop offset="50%" stop-color="#ffffff" stop-opacity="0.24" />
+      <stop offset="100%" stop-color="#dceeff" stop-opacity="0.44" />
+    </linearGradient>
+
+    <linearGradient id="front-orbit-grad" x1="59" y1="256" x2="453" y2="256" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#d8ecff" stop-opacity="0.44" />
+      <stop offset="16%" stop-color="#ffffff" stop-opacity="0.96" />
+      <stop offset="50%" stop-color="#ffffff" stop-opacity="1" />
+      <stop offset="84%" stop-color="#ffffff" stop-opacity="0.96" />
+      <stop offset="100%" stop-color="#dceeff" stop-opacity="0.44" />
+    </linearGradient>
+
+    <!-- Warm Astral-Gold Satellite Orb -->
+    <radialGradient id="gold-orb-grad" cx="34%" cy="30%" r="72%">
+      <stop offset="0%" stop-color="#fff4b8" />
+      <stop offset="42%" stop-color="#ffd166" />
+      <stop offset="100%" stop-color="#ff9924" />
+    </radialGradient>
+
+    <!-- Cool Starlight Counter-Spark -->
+    <linearGradient id="spark-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" />
+      <stop offset="55%" stop-color="#9bd4ff" />
+      <stop offset="100%" stop-color="#69b8ff" />
+    </linearGradient>
+
+    <!-- Star Base Fill (prevents subpixel seams between adjacent prism facets) -->
+    <linearGradient id="star-base-grad" x1="15%" y1="15%" x2="85%" y2="85%">
+      <stop offset="0%" stop-color="#ffffff" />
+      <stop offset="100%" stop-color="#d4e8ff" />
+    </linearGradient>
+
+    <clipPath id="tile-clip">
+      <rect x="24" y="24" width="464" height="464" rx="112" />
+    </clipPath>
+
+    <!-- Star Mask: Launch-Chevron Cutout + Clean 3D Clearance Under Front Orbit -->
+    <mask id="star-mask">
+      <rect width="512" height="512" fill="#ffffff" />
+      <!-- Integrated Launch-Chevron / Pivot Cutout (legible down to 16px) -->
+      <path d="M228 215 L300 256 L228 297 L242 256 Z" fill="#000000" />
+      <!-- Clean Separation Gap Where Front Orbital Arc Passes Over Lower & Right Star Arms -->
+      <g transform="rotate(-32 256 256)">
+        <path d="M456.5 256 A200.5 82 0 0 1 55.5 256 L68.5 256 A187.5 62 0 0 0 443.5 256 Z" fill="#000000" />
+      </g>
+    </mask>
+
+    <!-- Orbit Break Mask Around Satellite Orbs -->
+    <mask id="orbit-break-mask">
+      <rect width="512" height="512" fill="#ffffff" />
+      <circle cx="375.3" cy="136.4" r="24.5" fill="#000000" />
+      <circle cx="136.7" cy="375.6" r="19.5" fill="#000000" />
+    </mask>
+  </defs>
+
+  <!-- Base Rounded Squircle -->
+  <rect x="24" y="24" width="464" height="464" rx="112" fill="url(#tile-grad)" />
+
+  <!-- Top-Left Radial Light & Subtle Astrolabe Dial -->
+  <g clip-path="url(#tile-clip)">
+    <rect x="24" y="24" width="464" height="464" fill="url(#tile-highlight)" />
+    <circle cx="256" cy="256" r="148" stroke="#ffffff" stroke-opacity="0.11" stroke-width="1.5" />
+    <path d="M256 64 V74 M256 438 V448 M64 256 H74 M438 256 H448" stroke="#ffffff" stroke-opacity="0.18" stroke-width="2" stroke-linecap="round" />
+  </g>
+
+  <!-- Crisp Hairline Inner Rim -->
+  <rect x="25.25" y="25.25" width="461.5" height="461.5" rx="110.75" stroke="rgba(255,255,255,0.28)" stroke-width="2.5" />
+
+  <!-- Rear Orbital Astrolabe Arc (Behind Star) -->
+  <g mask="url(#orbit-break-mask)">
+    <g transform="rotate(-32 256 256)">
+      <path d="M59 256 A197 75 0 0 1 453 256 L447 256 A191 69 0 0 0 65 256 Z" fill="url(#rear-orbit-grad)" />
+    </g>
+  </g>
+
+  <!-- Faceted 4-Point Celestial Star with Launch-Chevron Cutout -->
+  <g mask="url(#star-mask)">
+    <path d="M256 86 L308 204 L426 256 L308 308 L256 426 L204 308 L86 256 L204 204 Z" fill="url(#star-base-grad)" />
+    <!-- Top Arm Facets -->
+    <polygon points="256,256 204,204 256,86" fill="#ffffff" />
+    <polygon points="256,256 256,86 308,204" fill="#dcebff" />
+    <!-- Left Arm Facets -->
+    <polygon points="256,256 86,256 204,204" fill="#f2f8ff" />
+    <polygon points="256,256 204,308 86,256" fill="#e4f1ff" />
+    <!-- Right Arm Facets -->
+    <polygon points="256,256 308,204 426,256" fill="#edf5ff" />
+    <polygon points="256,256 426,256 308,308" fill="#c2ddff" />
+    <!-- Bottom Arm Facets -->
+    <polygon points="256,256 256,426 204,308" fill="#d6e9ff" />
+    <polygon points="256,256 308,308 256,426" fill="#aacfff" />
+  </g>
+
+  <!-- Front Orbital Astrolabe Arc (Passes OVER Lower & Right Star Arms) -->
+  <g mask="url(#orbit-break-mask)">
+    <g transform="rotate(-32 256 256)">
+      <path d="M453 256 A197 78.5 0 0 1 59 256 L65 256 A191 65.5 0 0 0 447 256 Z" fill="url(#front-orbit-grad)" />
+    </g>
+  </g>
+
+  <!-- Warm Astral-Gold Satellite Orb (Upper-Right Along Orbit) -->
+  <circle cx="375.3" cy="136.4" r="19.5" fill="url(#gold-orb-grad)" />
+  <circle cx="369.8" cy="130.4" r="4.8" fill="#fffbe0" fill-opacity="0.72" />
+
+  <!-- Crisp Starlight Counter-Spark (Lower-Left Along Orbit) -->
+  <path d="M136.7 357.6 L141.8 370.5 L154.7 375.6 L141.8 380.7 L136.7 393.6 L131.6 380.7 L118.7 375.6 L131.6 370.5 Z" fill="url(#spark-grad)" />
+  <circle cx="136.7" cy="375.6" r="3.4" fill="#ffffff" />
+</svg>

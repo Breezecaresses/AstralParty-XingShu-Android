@@ -1,0 +1,42 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <queries>
+        <package android:name="com.feimo.astralparty" />
+        <package android:name="com.feimo.jxpd.mi" />
+        <package android:name="com.feimo.astralparty.bilibili" />
+        <package android:name="com.feimo.jxpd.bili" />
+        <package android:name="com.feimo.astralparty.huawei" />
+        <package android:name="com.feimo.jxpd.huawei" />
+        <package android:name="com.feimo.astralparty.nearme.gamecenter" />
+        <package android:name="com.feimo.astralparty.vivo" />
+        <package android:name="com.tencent.tmgp.astralparty" />
+        <package android:name="moe.shizuku.privileged.api" />
+        <package android:name="com.tencent.mobileqq" />
+    </queries>
+    <application android:allowBackup="false" android:label="星枢启动器"
+        android:icon="@mipmap/ic_xingshu" android:roundIcon="@mipmap/ic_xingshu" android:theme="@android:style/Theme.Material.Light.NoActionBar"
+        android:supportsRtl="true">
+        <provider android:name=".UpdateApkProvider" android:authorities="${applicationId}.update"
+            android:exported="false" android:grantUriPermissions="true" />
+        <activity android:name=".MainActivity" android:exported="true"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize|uiMode">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="xingshu-installer" android:host="qq-login" />
+                <data android:scheme="xingshu-installer" android:host="sync-game" />
+            </intent-filter>
+        </activity>
+        <provider android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku" android:multiprocess="false"
+            android:enabled="true" android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+    </application>
+</manifest>

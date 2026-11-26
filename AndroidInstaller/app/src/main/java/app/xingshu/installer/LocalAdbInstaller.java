@@ -1,0 +1,419 @@
+package app.xingshu.installer;
+
+import android.content.Context;
+import android.os.Build;
+import io.github.muntashirakon.adb.AbsAdbConnectionManager;
+import io.github.muntashirakon.adb.AdbStream;
+import java.io.ByteArrayOutputStream;
+import java.io.Closeable;
+import java.io.DataInputStream;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
+import java.security.PrivateKey;
+import java.security.cert.Certificate;
+import java.util.Base64;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+
+/** Loopback only; never accepts remote hosts or arbitrary shell commands from UI input. */
+final class LocalAdbInstaller implements Closeable {
+    private final Context context;
+    private final Manager manager;
+    private final ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor();
+
+    private static final class Manager extends AbsAdbConnectionManager {
+        final PhoneIdentity identity;
+
+        Manager(Context context) throws Exception {
+            identity = new PhoneIdentity(context);
+            setApi(Build.VERSION.SDK_INT);
+            setHostAddress("127.0.0.1");
+            setTimeout(15, TimeUnit.SECONDS);
+        }
+
+        protected PrivateKey getPrivateKey() { return identity.key; }
+        protected Certificate getCertificate() { return identity.certificate; }
+        protected String getDeviceName() { return "XingShu-Phone"; }
+    }
+
+    LocalAdbInstaller(Context context) throws Exception {
+        this.context = context.getApplicationContext();
+        manager = new Manager(context);
+    }
+
+    boolean connected() { return manager.isConnected(); }
+
+    private volatile String connectedHost = "127.0.0.1";
+    private String lastSyncedSpecJson;
+
+    String connectedHost() {
+        return connectedHost;
+    }
+
+    void pair(int port, String code) throws Exception {
+        pair(null, port, code);
+    }
+
+    void pair(String preferredLocalHost, int port, String code) throws Exception {
+        requireAndroid11();
+        java.util.List<String> hosts = verifiedLocalHosts(preferredLocalHost);
+        Exception lastError = null;
+        for (String host : hosts) {
+            try {
+                if (manager.pair(host, port, code)) {
+                    return;
+                }
+            } catch (Exception e) {
+                lastError = e;
+                String msg = e.getMessage() == null ? "" : e.getMessage();
+                String kind = e.getClass().getSimpleName();
+                if (kind.contains("Pairing") || msg.toLowerCase(java.util.Locale.ROOT).contains("bad password")
+                        || msg.toLowerCase(java.util.Locale.ROOT).contains("wrong")
+                        || msg.toLowerCase(java.util.Locale.ROOT).contains("secret")) {
+                    throw new IOException("配对码不正确或已过期，请重新点击系统“使用配对码配对设备”再试");
+                }
+            }
+        }
+        String suffix = (lastError != null && lastError.getMessage() != null && !lastError.getMessage().isEmpty())
+            ? "（" + lastError.getMessage() + "）" : "";
+        throw new IOException("配对未成功：请保持系统配对弹窗不关闭并核对端口与 6 位配对码" + suffix);
+    }
+
+    void connect(int port) throws Exception {
+        connect(null, port);
+    }
+
+    void connect(String preferredLocalHost, int port) throws Exception {
+        requireAndroid11();
+        lastSyncedSpecJson = null;
+        manager.disconnect();
+        java.util.List<String> hosts = verifiedLocalHosts(preferredLocalHost);
+        Exception lastError = null;
+        for (String host : hosts) {
+            try {
+                if (!manager.connect(host, port)) {
+                    manager.disconnect();
+                    continue;
+                }
+                String uid = shell("id -u", 20000).trim();
+                if (!uid.equals("2000")) {
+                    manager.disconnect();
+                    throw new IOException("未取得本机调试权限");
+                }
+                connectedHost = host;
+                return;
+            } catch (Exception e) {
+                manager.disconnect();
+                String kind = e.getClass().getSimpleName();
+                if (kind.contains("Pairing") || kind.contains("Authentication")) {
+                    throw new IOException("本机尚未配对或系统已重置授权，请先点击系统“使用配对码配对设备”完成第二步配对");
+                }
+                lastError = e;
+            }
+        }
+        String detail = (lastError != null && lastError.getMessage() != null && !lastError.getMessage().isEmpty())
+            ? "（" + lastError.getMessage() + "）" : "";
+        throw new IOException("无法连接本机无线调试端口 " + port + "：请确认系统“无线调试”开关保持开启，且端口为最新显示端口" + detail);
+    }
+
+    static java.util.List<String> verifiedLocalHosts(String preferredLocalHost) {
+        java.util.LinkedHashSet<String> deviceIps = new java.util.LinkedHashSet<>();
+        deviceIps.add("127.0.0.1");
+        try {
+            java.util.Enumeration<java.net.NetworkInterface> interfaces = java.net.NetworkInterface.getNetworkInterfaces();
+            if (interfaces != null) {
+                for (java.net.NetworkInterface ni : java.util.Collections.list(interfaces)) {
+                    if (ni == null || !ni.isUp()) continue;
+                    for (java.net.InetAddress addr : java.util.Collections.list(ni.getInetAddresses())) {
+                        if (addr instanceof java.net.Inet4Address && !addr.isLoopbackAddress()) {
+                            String host = addr.getHostAddress();
+                            if (host != null && !host.isEmpty()) deviceIps.add(host);
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        java.util.List<String> ordered = new java.util.ArrayList<>();
+        ordered.add("127.0.0.1");
+        if (preferredLocalHost != null && deviceIps.contains(preferredLocalHost) && !ordered.contains(preferredLocalHost)) {
+            ordered.add(preferredLocalHost);
+        }
+        for (String ip : deviceIps) {
+            if (!ordered.contains(ip)) ordered.add(ip);
+        }
+        return ordered;
+    }
+
+    static int tryDiscoverSystemAdbPort() {
+        String[] props = { "service.adb.tls.port", "service.adb.tcp.port" };
+        try {
+            Class<?> sp = Class.forName("android.os.SystemProperties");
+            java.lang.reflect.Method get = sp.getMethod("get", String.class, String.class);
+            for (String prop : props) {
+                Object raw = get.invoke(null, prop, "");
+                if (raw instanceof String) {
+                    String s = ((String) raw).trim();
+                    if (s.matches("[0-9]{4,5}")) {
+                        int p = Integer.parseInt(s);
+                        if (p >= 1024 && p <= 65535) return p;
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return -1;
+    }
+
+    synchronized void syncCoreSpec(CoreRuntimeSpec spec) throws Exception {
+        if (spec == null) return;
+        String json = spec.toCanonicalJson();
+        if (json.equals(lastSyncedSpecJson)) return;
+        File cacheDir = context.getCacheDir();
+        if (cacheDir != null && !cacheDir.isDirectory()) cacheDir.mkdirs();
+        File tmp = File.createTempFile("xingshu-core-spec-", ".json", cacheDir);
+        try {
+            try (FileOutputStream out = new FileOutputStream(tmp)) {
+                out.write(json.getBytes(StandardCharsets.UTF_8));
+                out.flush();
+            }
+            shell("mkdir -p " + quote(LocalInstallerMain.STAGING), 20000);
+            pushFile(tmp, "core-spec.json");
+            lastSyncedSpecJson = json;
+        } finally {
+            tmp.delete();
+        }
+    }
+
+    String scanPackages() throws Exception {
+        return operation("scan", null);
+    }
+
+    String readChannelLogcat() throws Exception {
+        return operation("channel-logcat", null);
+    }
+
+    String launchGame(String packageName) throws Exception {
+        String pkg = GamePackageCatalog.requireValidPackageName(packageName);
+        return operation("launch", pkg);
+    }
+
+    String writeGameHandoff(String packageName, String payloadJson) throws Exception {
+        String pkg = GamePackageCatalog.requireValidPackageName(packageName);
+        String b64 = Base64.getEncoder().encodeToString(payloadJson.getBytes(StandardCharsets.UTF_8));
+        return operation("handoff", pkg, b64);
+    }
+
+    String inspect(String packageName) throws Exception {
+        String pkg = GamePackageCatalog.requireValidPackageName(packageName);
+        return operation("inspect", pkg);
+    }
+
+    String apply(String packageName, boolean restore, String conflictHash, java.io.File candidateFile, java.io.File vanillaFile) throws Exception {
+        String pkg = GamePackageCatalog.requireValidPackageName(packageName);
+        // Preflight before sending payloads; the engine repeats every gate before touching the target.
+        String preflight = inspect(pkg);
+        if (!preflight.startsWith("游戏版本匹配") || preflight.contains("游戏仍在运行") || preflight.contains("未知版本")) {
+            return preflight;
+        }
+        if (preflight.contains("同位置覆盖冲突") && conflictHash == null) {
+            return "检测到同位置覆盖冲突，请先确认备份整理。\n" + preflight;
+        }
+        if (!restore && (candidateFile == null || !candidateFile.isFile())) {
+            throw new IOException("缺少星枢核心运行包，请先下载完成。");
+        }
+        shell("mkdir -p " + quote(LocalInstallerMain.STAGING), 20000);
+        try {
+            if (vanillaFile != null && vanillaFile.isFile()) {
+                pushFile(vanillaFile, "vanilla.__data");
+            }
+            if (!restore) {
+                pushFile(candidateFile, "candidate.__data");
+            }
+            String op = restore ? "restore" : (conflictHash == null ? "install" : "install-conflict:" + conflictHash);
+            return operation(op, pkg);
+        } finally {
+            try {
+                shell("rm -f " + quote(LocalInstallerMain.STAGING + "/vanilla.__data") + " "
+                    + quote(LocalInstallerMain.STAGING + "/candidate.__data"), 20000);
+            } catch (Exception ignored) { }
+        }
+    }
+
+    String installModPack(String packageName, String metaJson, java.io.File modZipFile) throws Exception {
+        String pkg = GamePackageCatalog.requireValidPackageName(packageName);
+        if (modZipFile == null || !modZipFile.isFile()) {
+            throw new IOException("缺少待安装的 Mod 压缩包。");
+        }
+        String b64 = Base64.getEncoder().encodeToString(metaJson.getBytes(StandardCharsets.UTF_8));
+        shell("mkdir -p " + quote(LocalInstallerMain.STAGING), 20000);
+        try {
+            pushFile(modZipFile, "mod.zip");
+            return operation("install-mod", pkg, b64);
+        } finally {
+            try {
+                shell("rm -f " + quote(LocalInstallerMain.STAGING + "/mod.zip"), 20000);
+            } catch (Exception ignored) { }
+        }
+    }
+
+    String listInstalledMods(String packageName) throws Exception {
+        String pkg = GamePackageCatalog.requireValidPackageName(packageName);
+        return operation("list-mods", pkg);
+    }
+
+    String removeModPack(String packageName, String modId) throws Exception {
+        String pkg = GamePackageCatalog.requireValidPackageName(packageName);
+        if (modId == null || !modId.matches("[A-Za-z0-9._-]{1,120}")) {
+            throw new IllegalArgumentException("模组标识无效");
+        }
+        return operation("remove-mod", pkg, modId);
+    }
+
+    String setOfficialModules(String packageName, String moduleIdsCsv, boolean enable, boolean remove) throws Exception {
+        String pkg = GamePackageCatalog.requireValidPackageName(packageName);
+        if (moduleIdsCsv == null || !moduleIdsCsv.matches("[a-z0-9,-]{1,512}")) {
+            throw new IllegalArgumentException("官方模块参数无效");
+        }
+        String mode = remove ? "remove" : (enable ? "enable" : "disable");
+        return operation("set-official-modules", pkg, mode, moduleIdsCsv);
+    }
+
+    String manageCustomize(String packageName, String op, String payloadJson) throws Exception {
+        String pkg = GamePackageCatalog.requireValidPackageName(packageName);
+        if (op == null || !op.matches("[a-z0-9_]{1,40}")) {
+            throw new IllegalArgumentException("自定义操作名无效");
+        }
+        String raw = payloadJson == null || payloadJson.trim().isEmpty() ? "{}" : payloadJson;
+        String b64 = Base64.getEncoder().encodeToString(raw.getBytes(StandardCharsets.UTF_8));
+        return operation("customize-op", pkg, op, b64);
+    }
+
+    String importCustomizeFile(String packageName, String targetKind, String fileName, java.io.File stagedLocalFile) throws Exception {
+        String pkg = GamePackageCatalog.requireValidPackageName(packageName);
+        if (targetKind == null || !targetKind.matches("[a-z0-9_]{1,32}")) {
+            throw new IllegalArgumentException("自定义目录类型无效");
+        }
+        if (stagedLocalFile == null || !stagedLocalFile.isFile()) {
+            throw new IllegalArgumentException("待导入文件不存在");
+        }
+        String b64Name = Base64.getEncoder().encodeToString((fileName == null ? "" : fileName).getBytes(StandardCharsets.UTF_8));
+        shell("mkdir -p " + quote(LocalInstallerMain.STAGING), 20000);
+        try {
+            pushFile(stagedLocalFile, "customize_import.bin");
+            return operation("customize-import", pkg, targetKind, b64Name);
+        } finally {
+            try {
+                shell("rm -f " + quote(LocalInstallerMain.STAGING + "/customize_import.bin"), 20000);
+            } catch (Exception ignored) { }
+        }
+    }
+
+    private String operation(String operation, String packageName) throws Exception {
+        return operation(operation, packageName, null, null);
+    }
+
+    private String operation(String operation, String packageName, String extraArg) throws Exception {
+        return operation(operation, packageName, extraArg, null);
+    }
+
+    private String operation(String operation, String packageName, String extraArg, String extraArg2) throws Exception {
+        String cmd = "CLASSPATH=" + quote(context.getApplicationInfo().sourceDir)
+            + " /system/bin/app_process / app.xingshu.installer.LocalInstallerMain " + quote(operation);
+        if (packageName != null && !packageName.isEmpty()) {
+            cmd += " " + quote(GamePackageCatalog.requireValidPackageName(packageName));
+        }
+        if (extraArg != null && !extraArg.isEmpty()) {
+            cmd += " " + quote(extraArg);
+        }
+        if (extraArg2 != null && !extraArg2.isEmpty()) {
+            cmd += " " + quote(extraArg2);
+        }
+        String output = shell(cmd, 180000);
+        String marker = "XINGSHU_RESULT:";
+        for (String line : output.split("[\\r\\n]+")) {
+            if (line.startsWith(marker)) {
+                return new String(Base64.getDecoder().decode(line.substring(marker.length()).trim()), StandardCharsets.UTF_8);
+            }
+        }
+        throw new IOException("授权进程未返回结果：" + output.substring(0, Math.min(output.length(), 1200)));
+    }
+
+    private String shell(String command, long timeout) throws Exception {
+        ScheduledFuture<?> deadline = timer.schedule(() -> {
+            try { manager.disconnect(); } catch (Exception ignored) { }
+        }, timeout, TimeUnit.MILLISECONDS);
+        try (AdbStream stream = manager.openStream("shell:" + command); InputStream in = stream.openInputStream()) {
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            byte[] b = new byte[4096];
+            int n;
+            while ((n = in.read(b)) != -1) {
+                bytes.write(b, 0, n);
+                if (bytes.size() > 2 * 1024 * 1024) throw new IOException("检查输出超出限制");
+            }
+            return bytes.toString("UTF-8").replace("\r", "");
+        } finally {
+            deadline.cancel(false);
+        }
+    }
+
+    private void pushFile(java.io.File localFile, String remoteName) throws Exception {
+        ScheduledFuture<?> deadline = timer.schedule(() -> {
+            try { manager.disconnect(); } catch (Exception ignored) { }
+        }, 120000, TimeUnit.MILLISECONDS);
+        try (AdbStream stream = manager.openStream("sync:"); InputStream fileIn = new java.io.FileInputStream(localFile)) {
+            OutputStream out = stream.openOutputStream();
+            DataInputStream reply = new DataInputStream(stream.openInputStream());
+            byte[] path = (LocalInstallerMain.STAGING + "/" + remoteName + ",33152").getBytes(StandardCharsets.UTF_8);
+            packet(out, "SEND", path.length);
+            out.write(path);
+            out.flush();
+            byte[] data = new byte[4096];
+            int n;
+            while ((n = fileIn.read(data)) != -1) {
+                packet(out, "DATA", n);
+                out.write(data, 0, n);
+                out.flush();
+            }
+            packet(out, "DONE", (int) (System.currentTimeMillis() / 1000));
+            out.flush();
+            byte[] header = new byte[8];
+            reply.readFully(header);
+            String id = new String(header, 0, 4, StandardCharsets.US_ASCII);
+            int size = ByteBuffer.wrap(header, 4, 4).order(ByteOrder.LITTLE_ENDIAN).getInt();
+            if (!id.equals("OKAY")) {
+                if (size < 0 || size > 8192) throw new IOException("传送文件响应无效");
+                byte[] error = new byte[size];
+                reply.readFully(error);
+                throw new IOException("传送文件失败：" + new String(error, StandardCharsets.UTF_8));
+            }
+        } finally {
+            deadline.cancel(false);
+        }
+    }
+
+    private static void packet(OutputStream out, String id, int size) throws IOException {
+        out.write(ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
+            .put(id.getBytes(StandardCharsets.US_ASCII)).putInt(size).array());
+    }
+
+    private static String quote(String value) { return "'" + value.replace("'", "'\\''") + "'"; }
+
+    private static void requireAndroid11() throws IOException {
+        if (Build.VERSION.SDK_INT < 30) throw new IOException("本机无线配对需要 Android 11 或更新版本");
+    }
+
+    public void close() throws IOException {
+        lastSyncedSpecJson = null;
+        timer.shutdownNow();
+        manager.disconnect();
+    }
+}

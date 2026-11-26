@@ -1,0 +1,920 @@
+#if XINGSHU_ANDROID_PREVIEW
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Net.Sockets;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Threading;
+using GameLogic;
+using Tools;
+using UnityEngine;
+using UnityEngine.Networking;
+using XingShu.Bridge;
+using XingShu.Spectator;
+using XingShu.Truth;
+using XingShuRuntime.Utilities;
+
+namespace XingShu.Runtime
+{
+    // Mobile all-channel reverse QQ bind, cooperative cloud hands, and direct snapshot upload.
+    // Persistent per-UID tokens are stored in game-private PlayerPrefs and expire on server revocation.
+    internal static class AndroidCloudHands
+    {
+        private const string Origin = "https://124.221.176.134";
+        private const string PrefDeviceKey = "XingShu_MobileDeviceId_v1";
+        private const string PrefTokenPrefix = "XingShu_MobileBind_Tok_";
+        private const string PrefPendingPrefix = "XingShu_MobilePending_v1_";
+        private static readonly List<Dictionary<string, object>> QueuedDetails = new List<Dictionary<string, object>>();
+
+        private static string _deviceId;
+        private static UnityWebRequest _request;
+        private static Action<long, Dictionary<string, object>> _onComplete;
+        private static string _requestId;
+        private static string _verifier;
+        private static string _pairingCommand;
+        private static string _session;
+        private static string _activeScope;
+        private static long _authorizedUid;
+        private static long _loadedPrefUid;
+        private static float _loginDeadline;
+        private static float _pairingDeadline;
+        private static long _pendingUid;
+        private static bool _lastWasHands, _reportDenied;
+        private static double _lastClock = ThinkingClock.RealSeconds(), _elapsed;
+        private static float Now
+        {
+            get
+            {
+                double clock = ThinkingClock.RealSeconds();
+                _elapsed += Math.Max(0d, clock - _lastClock);
+                _lastClock = Math.Max(clock, _lastClock);
+                return (float)_elapsed;
+            }
+        }
+        private static float _nextPoll;
+        private static string _appHandoff, _appUid, _lastConsumedIntentHandoff;
+        private static float _appHandoffDeadline, _nextIntentCheck;
+        private static float _localBridgeProbeUntil = 45f, _nextBridgeProbe;
+        private static volatile int _bridgeProbeInFlight;
+        private static volatile string _pendingBridgeJson;
+        private static float _localRoomProbeUntil = 60f, _nextRoomProbe;
+        private static volatile int _roomProbeInFlight;
+        private static volatile string _pendingRoomBridgeJson;
+        private static CloudHandDiagnosticState _handDiagnostic = CloudHandDiagnosticState.None;
+        private static CloudHandDiagnosticState _lastLoggedDiagnostic = CloudHandDiagnosticState.None;
+        private static long _lastDiagnosticRoom;
+
+        private static string _pendingReportJson;
+        private static string _inFlightReportJson;
+        private static string _lastUploadedReport;
+        private static float _reportRetryAt;
+
+        internal static CloudHandDiagnosticState CurrentHandDiagnostic =>
+            _session == null ? CloudHandDiagnosticState.Unbound : _handDiagnostic;
+        internal static string Status { get; private set; } = "一键同步「星枢手机助手」账号，进合作局自动推送队友手牌";
+        internal static bool CanDisconnect => _session != null;
+        internal static string ButtonLabel => _session != null ? "刷新云端手牌" :
+            _verifier != null ? "取消绑定码" : "同步手机助手账号";
+        internal static string SecondaryButtonLabel => PairingCommand != null ? "复制指令" :
+            _session == null ? "QQ 绑定码" :
+            CanReport ? "同步资料" : "";
+        internal static bool ShowSecondaryButton => PairingCommand != null || _session == null || CanReport;
+        internal static string PairingCommand => Now < _pairingDeadline ? _pairingCommand : null;
+        internal static bool CanReport => _session != null && MobileCloudPollPolicy.CanReport(_activeScope) && !_reportDenied && XingShuRuntimeHost.CurrentLocalPlayerId > 0 &&
+            XingShuRuntimeHost.CurrentLocalPlayerId == _authorizedUid;
+
+        internal static void OnAppFocusChanged(bool hasFocus)
+        {
+            if (!hasFocus) return;
+            _nextIntentCheck = 0f;
+            _nextRoomProbe = 0f;
+            _localRoomProbeUntil = Math.Max(_localRoomProbeUntil, Now + 60f);
+            if (_session != null) return;
+            _nextBridgeProbe = 0f;
+            _localBridgeProbeUntil = Math.Max(_localBridgeProbeUntil, Now + 45f);
+        }
+
+        private static string GetOrCreateDeviceId()
+        {
+            if (!string.IsNullOrEmpty(_deviceId)) return _deviceId;
+            string saved = "";
+            try { saved = PlayerPrefs.GetString(PrefDeviceKey, ""); } catch { }
+            if (Regex.IsMatch(saved ?? "", @"\A[A-Za-z0-9_-]{16,64}\z"))
+            {
+                _deviceId = saved;
+                return _deviceId;
+            }
+            _deviceId = Guid.NewGuid().ToString("N");
+            try
+            {
+                PlayerPrefs.SetString(PrefDeviceKey, _deviceId);
+                PlayerPrefs.Save();
+            }
+            catch { }
+            return _deviceId;
+        }
+
+        private static void EnsureSavedSessionLoaded(long uid)
+        {
+            if (uid <= 0 || uid == _loadedPrefUid) return;
+            _loadedPrefUid = uid;
+            if (_verifier != null)
+            {
+                if (_pendingUid == 0 || _pendingUid == uid) return;
+                _requestId = _verifier = _pairingCommand = _activeScope = null;
+                _pendingUid = 0;
+                _loginDeadline = _pairingDeadline = _nextPoll = 0f;
+            }
+            string pending = "";
+            try { pending = PlayerPrefs.GetString(PrefPendingPrefix + uid, ""); } catch { }
+            if (PendingMobileLogin.TryRead(pending, uid, DateTime.UtcNow, out var resumed))
+            {
+                _requestId = resumed.RequestId; _verifier = resumed.Verifier; _pendingUid = uid;
+                _activeScope = resumed.Scope;
+                _loginDeadline = Now + (float)(resumed.ExpiresAtUtc - DateTime.UtcNow).TotalSeconds;
+                _nextPoll = 0;
+                Status = "正在取回 QQ 已批准的游戏同步授权…";
+                return;
+            }
+            string saved = "";
+            try { saved = PlayerPrefs.GetString(PrefTokenPrefix + uid.ToString(CultureInfo.InvariantCulture), ""); } catch { }
+            if (Regex.IsMatch(saved ?? "", @"\A[A-Za-z0-9_-]{43,128}\z"))
+            {
+                _session = saved;
+                _authorizedUid = uid;
+                _activeScope = "mobile_bind";
+                _reportDenied = false;
+                _lastUploadedReport = null;
+                _handDiagnostic = CloudHandDiagnosticState.None;
+                Status = "已连接星枢全端同步（UID " + uid + "），合作局自动推送手牌";
+                XingShuRuntimeHost.LogLifecycle("[AndroidCloudHands] 已从本地缓存恢复同步凭证; uid=" + uid);
+                GameLibraryExporter.Request(1f);
+            }
+            else if (_session != null && _authorizedUid != uid)
+            {
+                _session = null;
+                _authorizedUid = 0;
+                _activeScope = null;
+                HandTruthSource.ClearCloudMirror();
+                Status = "检测到游戏账号切换，可点击「同步手机助手账号」重新连接";
+            }
+        }
+
+        private static void PersistSession(long uid, string token, string scope)
+        {
+            if (uid <= 0 || string.IsNullOrEmpty(token) || scope != "mobile_bind") return;
+            try
+            {
+                PlayerPrefs.SetString(PrefTokenPrefix + uid.ToString(CultureInfo.InvariantCulture), token);
+                PlayerPrefs.Save();
+            }
+            catch { }
+        }
+
+        private static void ClearPersistedSession(long uid)
+        {
+            if (uid <= 0) return;
+            try
+            {
+                PlayerPrefs.DeleteKey(PrefTokenPrefix + uid.ToString(CultureInfo.InvariantCulture));
+                PlayerPrefs.Save();
+            }
+            catch { }
+        }
+
+        private static void ClearPendingLogin()
+        {
+            if (_pendingUid <= 0) return;
+            try { PlayerPrefs.DeleteKey(PrefPendingPrefix + _pendingUid); PlayerPrefs.Save(); } catch { }
+            _pendingUid = 0;
+        }
+
+        internal static void Toggle()
+        {
+            long currentUid = XingShuRuntimeHost.CurrentLocalPlayerId;
+            if (_session != null)
+            {
+                _nextPoll = 0;
+                Status = "正在刷新本局云端手牌…";
+                return;
+            }
+            if (_verifier != null)
+            {
+                Reset("已取消本次绑定码，可点「同步手机助手账号」或重新生成绑定码");
+                return;
+            }
+            if (currentUid <= 0)
+            {
+                Status = "请先在游戏内登录账号，再同步手机助手或生成 QQ 绑定码";
+                return;
+            }
+            _localBridgeProbeUntil = Now + 60f;
+            _nextBridgeProbe = 0f;
+            _nextIntentCheck = 0f;
+            try
+            {
+                string pkg = "";
+                try { pkg = Application.identifier ?? ""; } catch { }
+                long activeUid = XingShuRuntimeHost.CurrentLocalPlayerId;
+                var queryParts = new List<string>();
+                if (!string.IsNullOrEmpty(pkg)) queryParts.Add("pkg=" + Uri.EscapeDataString(pkg));
+                if (activeUid > 0) queryParts.Add("uid=" + activeUid.ToString(CultureInfo.InvariantCulture));
+                string deepLink = queryParts.Count == 0
+                    ? "xingshu-installer://sync-game"
+                    : "xingshu-installer://sync-game?" + string.Join("&", queryParts.ToArray());
+                Application.OpenURL(deepLink);
+                Status = "正在从星枢手机助手获取账号并自动同步…（若未安装助手，可点右侧「QQ 绑定码」）";
+            }
+            catch
+            {
+                StartPairingCode();
+            }
+        }
+
+        private static void StartPairingCode()
+        {
+            long currentUid = XingShuRuntimeHost.CurrentLocalPlayerId;
+            if (currentUid <= 0)
+            {
+                Status = "请先在游戏内登录账号，再生成 QQ 绑定码";
+                return;
+            }
+            if (_request != null) return;
+            _pendingUid = currentUid;
+            using (var random = RandomNumberGenerator.Create())
+            using (var sha = SHA256.Create())
+            {
+                var entropy = new byte[32];
+                random.GetBytes(entropy);
+                _verifier = Base64Url(entropy);
+                Status = "正在向星枢服务器申请 8 位绑定码";
+                string nick = "";
+                try
+                {
+                    var p = SimpleSingletonProvider<GameLogicManager>.hasInstance
+                        ? SimpleSingletonProvider<GameLogicManager>.inst?.account?.GetPlayerInfo()
+                        : null;
+                    if (p != null && p.Id == currentUid) nick = p.Nick ?? "";
+                }
+                catch { }
+                var body = new Dictionary<string, string>
+                {
+                    ["device_id"] = GetOrCreateDeviceId(),
+                    ["purpose"] = "mobile_bind",
+                    ["uid"] = currentUid.ToString(CultureInfo.InvariantCulture),
+                    ["nick"] = nick,
+                    ["platform"] = XingShuBridgeClient.DetectPlatform(),
+                    ["code_challenge"] = Base64Url(sha.ComputeHash(Encoding.ASCII.GetBytes(_verifier)))
+                };
+                PostJson("/auth/device", BridgeJson.Serialize(body), null, ShowPairingCode);
+            }
+        }
+
+        internal static void Disconnect()
+        {
+            string session = _session;
+            ClearPersistedSession(_authorizedUid);
+            Reset("已退出游戏同步，QQ 账号绑定仍保留");
+            if (session != null) PostJson("/auth/logout", "{}", session, (_, __) => { });
+        }
+
+        internal static void TriggerSecondaryAction()
+        {
+            string cmd = PairingCommand;
+            if (cmd != null)
+            {
+                GUIUtility.systemCopyBuffer = cmd;
+                Status = "已复制指令「" + cmd + "」，请去 QQ 群/私聊粘贴发送";
+                return;
+            }
+            if (_session == null)
+            {
+                StartPairingCode();
+                return;
+            }
+            if (!CanReport) return;
+            _lastUploadedReport = null;
+            _reportRetryAt = 0f;
+            GameLibraryExporter.ResetMobileDedup();
+            GameLibraryExporter.Request(0f);
+            Status = "正在立即上传最新角色进度与战绩到 QQ Bot";
+        }
+
+        internal static bool EnqueueReport(string reportJson)
+        {
+            if (!CanReport || string.IsNullOrEmpty(reportJson)) return false;
+            if (reportJson == _lastUploadedReport || reportJson == _inFlightReportJson || reportJson == _pendingReportJson)
+                return true;
+            _pendingReportJson = reportJson;
+            return true;
+        }
+
+        internal static bool EnqueueMatchDetail(Dictionary<string, object> detail)
+        {
+            if (!CanReport || detail == null) return false;
+            lock (QueuedDetails)
+            {
+                if (QueuedDetails.Count >= 10) QueuedDetails.RemoveAt(0);
+                QueuedDetails.Add(detail);
+            }
+            return true;
+        }
+
+        internal static List<Dictionary<string, object>> SnapshotQueuedDetails()
+        {
+            lock (QueuedDetails)
+            {
+                return QueuedDetails.Count == 0 ? null : new List<Dictionary<string, object>>(QueuedDetails);
+            }
+        }
+
+        internal static void ConsumeQueuedDetails(int count)
+        {
+            if (count <= 0) return;
+            lock (QueuedDetails)
+            {
+                int remove = Math.Min(count, QueuedDetails.Count);
+                if (remove > 0) QueuedDetails.RemoveRange(0, remove);
+            }
+        }
+
+        internal static void Tick()
+        {
+            long uid = XingShuRuntimeHost.CurrentLocalPlayerId;
+            ReadAppLoginIntent();
+            if (uid > 0) EnsureSavedSessionLoaded(uid);
+
+            if (_request != null)
+            {
+                if (!_request.isDone) return;
+                var callback = _onComplete;
+                var code = _request.responseCode;
+                Dictionary<string, object> value = null;
+                using (var completed = _request)
+                {
+                    _request = null;
+                    _onComplete = null;
+                    if (completed.result == UnityWebRequest.Result.Success && completed.downloadedBytes <= 65536)
+                    {
+                        value = BridgeJson.Parse(completed.downloadHandler.text) as Dictionary<string, object>;
+                    }
+                }
+                callback(code, value);
+                return;
+            }
+
+            float now = Now;
+            string bridgeJson = _pendingBridgeJson;
+            if (!string.IsNullOrEmpty(bridgeJson))
+            {
+                _pendingBridgeJson = null;
+                try
+                {
+                    var parsedBridge = BridgeJson.Parse(bridgeJson) as Dictionary<string, object>;
+                    if (parsedBridge != null)
+                        AcceptHandoffCandidate(Field(parsedBridge, "handoff"), Field(parsedBridge, "uid"), "local_bridge");
+                }
+                catch { }
+            }
+            string roomBridgeJson = _pendingRoomBridgeJson;
+            if (!string.IsNullOrEmpty(roomBridgeJson))
+            {
+                _pendingRoomBridgeJson = null;
+                try
+                {
+                    var parsedRoom = BridgeJson.Parse(roomBridgeJson) as Dictionary<string, object>;
+                    if (parsedRoom != null) NativeRoomAutoEnter.EnqueueFromAndroidJson(parsedRoom);
+                }
+                catch { }
+            }
+            if (uid > 0 && now < _localRoomProbeUntil && now >= _nextRoomProbe &&
+                !(SimpleSingletonProvider<GameLogicManager>.hasInstance && (SimpleSingletonProvider<GameLogicManager>.inst?.room?.IsInRoom ?? false)))
+            {
+                _nextRoomProbe = now + 2f;
+                ProbeLocalLoopback("/room-handoff", isRoom: true);
+            }
+            if (_session == null && _appHandoff == null && _requestId == null && uid > 0 && now < _localBridgeProbeUntil && now >= _nextBridgeProbe)
+            {
+                _nextBridgeProbe = now + 2f;
+                ProbeLocalLoopback("/handoff", isRoom: false);
+            }
+            if (_appHandoff != null && now < _appHandoffDeadline && uid > 0)
+            {
+                if (uid.ToString(CultureInfo.InvariantCulture) != _appUid)
+                {
+                    Status = "当前游戏 UID 与助手账号不同，请切换游戏账号后继续";
+                    return;
+                }
+                string handoff = _appHandoff;
+                _appHandoff = null;
+                Status = "正在接续星枢助手登录，同步账号与手牌权限…";
+                var body = new Dictionary<string, string> { ["handoff"] = handoff, ["playerId"] = _appUid };
+                PostJson("/auth/mobile/claim", BridgeJson.Serialize(body), null, (code, data) =>
+                {
+                    if (XingShuRuntimeHost.CurrentLocalPlayerId != uid) return;
+                    if (code == 200 && Field(data, "status") == "succeeded")
+                    {
+                        CompleteLogin(code, data);
+                        if (_session != null) Status = "星枢账号已接续，正在同步资料与合作手牌";
+                        XingShuRuntimeHost.LogLifecycle("[AndroidCloudHands] /auth/mobile/claim 成功; uid=" + uid + "; scope=" + (_activeScope ?? ""));
+                    }
+                    else
+                    {
+                        Status = "助手账号同步未完成，请回到助手重新点击「启动游戏并同步当前账号」";
+                        XingShuRuntimeHost.LogLifecycle("[AndroidCloudHands] /auth/mobile/claim 失败; code=" + code + "; status=" + Field(data, "status"));
+                    }
+                });
+                return;
+            }
+            if (_appHandoff != null && now >= _appHandoffDeadline) _appHandoff = _appUid = null;
+            if (_requestId != null)
+            {
+                if (now >= _loginDeadline)
+                {
+                    Reset("绑定码已过期，请重新点击生成");
+                    return;
+                }
+                if (now < _nextPoll) return;
+                _nextPoll = now + 2f;
+                var pollBody = new Dictionary<string, string>
+                {
+                    ["request_id"] = _requestId, ["code_verifier"] = _verifier
+                };
+                PostJson("/auth/device/poll", BridgeJson.Serialize(pollBody), null, CompleteLogin);
+                return;
+            }
+
+            long room = HandSessionLifecycle.ActiveRoomId();
+            if (room != _lastDiagnosticRoom)
+            {
+                _lastDiagnosticRoom = room;
+                _lastLoggedDiagnostic = CloudHandDiagnosticState.None;
+                _handDiagnostic = CloudHandDiagnosticState.None;
+            }
+
+            if (_session == null)
+            {
+                if (room > 0 && HandCardDisplayManager.IsPVEMode())
+                {
+                    _handDiagnostic = CloudHandDiagnosticState.Unbound;
+                    LogDiagnosticTransition(room, CloudHandDiagnosticState.Unbound, 0, "no_session");
+                }
+                return;
+            }
+
+            var manager = SimpleSingletonProvider<GameLogicManager>.inst;
+            bool handsDue = now >= _nextPoll && room > 0 && uid == _authorizedUid &&
+                manager?.watch?.PlayerIsWatcher() != true && HandCardDisplayManager.IsPVEMode();
+            bool reportDue = _pendingReportJson != null && now >= _reportRetryAt && CanReport;
+            var work = MobileCloudPollPolicy.Next(handsDue, reportDue, _lastWasHands);
+            if (work == MobileCloudWork.Report)
+            {
+                string payload = _pendingReportJson;
+                _pendingReportJson = null;
+                _inFlightReportJson = payload;
+                _lastWasHands = false;
+                PostJson("/account/data/report", payload, _session, CompleteReport);
+                return;
+            }
+
+            if (now < _nextPoll) return;
+            _nextPoll = now + 2f;
+
+            if (room <= 0 || manager?.watch?.PlayerIsWatcher() == true || !HandCardDisplayManager.IsPVEMode())
+            {
+                _handDiagnostic = CloudHandDiagnosticState.None;
+                if (_activeScope == "mobile_bind")
+                    Status = string.IsNullOrEmpty(_lastUploadedReport)
+                        ? "已绑定 QQ 全端同步，正在收集资料并准备同步"
+                        : "已绑定 QQ 全端同步（资料与合作手牌均已就绪）";
+                else
+                    Status = "已授权，等待允许观战的合作对局";
+                return;
+            }
+            if (uid != _authorizedUid)
+            {
+                _handDiagnostic = CloudHandDiagnosticState.AccountMismatch;
+                LogDiagnosticTransition(room, CloudHandDiagnosticState.AccountMismatch, 0, "uid_mismatch");
+                Status = "本局账号与绑定账号不一致";
+                return;
+            }
+            long epoch = HandSessionLifecycle.AndroidMatchEpoch;
+            _lastWasHands = true;
+            var liveBody = new Dictionary<string, string>
+            {
+                ["roomId"] = room.ToString(CultureInfo.InvariantCulture),
+                ["playerId"] = uid.ToString(CultureInfo.InvariantCulture)
+            };
+            PostJson("/account/data/live-hands", BridgeJson.Serialize(liveBody), _session,
+                (code, data) => CompleteHandRead(code, data, room, uid, epoch));
+        }
+
+        private static void ReadAppLoginIntent()
+        {
+            if (Now < _nextIntentCheck) return;
+            _nextIntentCheck = Now + 1f;
+            try
+            {
+                string handoffPath = Path.Combine(Application.persistentDataPath ?? "", "xingshu_handoff.json");
+                if (!string.IsNullOrEmpty(handoffPath) && File.Exists(handoffPath))
+                {
+                    string raw = File.ReadAllText(handoffPath, Encoding.UTF8);
+                    try { File.Delete(handoffPath); } catch { }
+                    var parsed = BridgeJson.Parse(raw) as Dictionary<string, object>;
+                    string fileHandoff = Field(parsed, "handoff");
+                    string fileUid = Field(parsed, "uid");
+                    if (AcceptHandoffCandidate(fileHandoff, fileUid, "handoff_file"))
+                    {
+                        return;
+                    }
+                }
+            }
+            catch { }
+            try
+            {
+                using (var unity = new AndroidJavaClass("com.unity3d.player.UnityPlayer"))
+                using (var activity = unity.GetStatic<AndroidJavaObject>("currentActivity"))
+                using (var intent = activity.Call<AndroidJavaObject>("getIntent"))
+                {
+                    string roomHandoff = intent.Call<string>("getStringExtra", "xingshu_room_handoff");
+                    if (!string.IsNullOrEmpty(roomHandoff))
+                    {
+                        try
+                        {
+                            var parsedRoom = BridgeJson.Parse(roomHandoff) as Dictionary<string, object>;
+                            if (parsedRoom != null) NativeRoomAutoEnter.EnqueueFromAndroidJson(parsedRoom);
+                        }
+                        catch { }
+                        try { intent.Call<AndroidJavaObject>("putExtra", "xingshu_room_handoff", "")?.Dispose(); } catch { }
+                    }
+                    string handoff = intent.Call<string>("getStringExtra", "xingshu_session_handoff");
+                    if (string.IsNullOrEmpty(handoff)) return;
+                    string uid = intent.Call<string>("getStringExtra", "xingshu_account_uid");
+                    AcceptHandoffCandidate(handoff, uid, "activity_intent");
+                    // Intent.removeExtra returns void (not in stripped reference DLL); overwrite via Intent putExtra(String, String).
+                    try
+                    {
+                        intent.Call<AndroidJavaObject>("putExtra", "xingshu_session_handoff", "")?.Dispose();
+                        intent.Call<AndroidJavaObject>("putExtra", "xingshu_account_uid", "")?.Dispose();
+                    }
+                    catch { }
+                }
+            }
+            catch { /* Older hosts without an activity intent retain the manual binding entry. */ }
+        }
+
+        private static bool AcceptHandoffCandidate(string handoff, string uid, string source)
+        {
+            if (!MobileCloudPollPolicy.TryAcceptAppHandoff(handoff, uid, _lastConsumedIntentHandoff))
+                return false;
+            _appHandoff = handoff;
+            _appUid = uid;
+            _lastConsumedIntentHandoff = handoff;
+            _appHandoffDeadline = Now + 120f;
+            Status = "已收到星枢助手账号（UID " + uid + "），正在自动完成同步…";
+            XingShuRuntimeHost.LogLifecycle("[AndroidCloudHands] 已接收助手同步凭据; source=" + source + "; uid=" + uid);
+            return true;
+        }
+
+        private static void ProbeLocalLoopback(string path, bool isRoom)
+        {
+            if (isRoom)
+            {
+                if (Interlocked.CompareExchange(ref _roomProbeInFlight, 1, 0) != 0) return;
+            }
+            else
+            {
+                if (Interlocked.CompareExchange(ref _bridgeProbeInFlight, 1, 0) != 0) return;
+            }
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                try
+                {
+                    using (var client = new TcpClient())
+                    {
+                        var ar = client.BeginConnect("127.0.0.1", 47821, null, null);
+                        if (!ar.AsyncWaitHandle.WaitOne(500)) return;
+                        client.EndConnect(ar);
+                        using (var stream = client.GetStream())
+                        {
+                            try { stream.ReadTimeout = 800; stream.WriteTimeout = 800; } catch { }
+                            byte[] req = Encoding.ASCII.GetBytes("GET " + path + " HTTP/1.1\r\nHost: 127.0.0.1:47821\r\nConnection: close\r\n\r\n");
+                            stream.Write(req, 0, req.Length);
+                            stream.Flush();
+                            using (var ms = new MemoryStream())
+                            {
+                                byte[] buf = new byte[1024];
+                                int total = 0;
+                                while (total < 16384)
+                                {
+                                    int n = stream.Read(buf, 0, Math.Min(buf.Length, 16384 - total));
+                                    if (n <= 0) break;
+                                    ms.Write(buf, 0, n);
+                                    total += n;
+                                }
+                                string raw = Encoding.UTF8.GetString(ms.ToArray());
+                                int sep = raw.IndexOf("\r\n\r\n", StringComparison.Ordinal);
+                                if (sep > 0 && raw.StartsWith("HTTP/1.1 200", StringComparison.Ordinal))
+                                {
+                                    string body = raw.Substring(sep + 4).Trim();
+                                    if (body.Length > 0 && body.Length <= 4096)
+                                    {
+                                        if (isRoom) _pendingRoomBridgeJson = body;
+                                        else _pendingBridgeJson = body;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                catch { }
+                finally
+                {
+                    if (isRoom) Interlocked.Exchange(ref _roomProbeInFlight, 0);
+                    else Interlocked.Exchange(ref _bridgeProbeInFlight, 0);
+                }
+            });
+        }
+
+        private static void ShowPairingCode(long code, Dictionary<string, object> value)
+        {
+            string id = Field(value, "request_id");
+            string pairingCode = Field(value, "pairing_code");
+            string scope = Field(value, "scope");
+            if (code != 200 || (scope != "mobile_bind" && scope != "mobile_hands") ||
+                !Regex.IsMatch(id, @"\A[A-Za-z0-9_-]{32}\z") ||
+                !Regex.IsMatch(pairingCode, @"\A[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8}\z"))
+            {
+                Reset("无法生成 QQ 绑定码，请检查网络后重试");
+                return;
+            }
+            _requestId = id;
+            _activeScope = scope;
+            int ttl;
+            if (!int.TryParse(Field(value, "expires_in"), out ttl) || ttl <= 0) ttl = 600;
+            ttl = Math.Min(ttl, 600);
+            _loginDeadline = Now + ttl;
+            _pairingDeadline = Now + Math.Min(120, ttl);
+            var pending = new PendingMobileLogin { RequestId=id, Verifier=_verifier, Uid=_pendingUid,
+                Scope=scope, ExpiresAtUtc=DateTime.UtcNow.AddSeconds(ttl) };
+            try { PlayerPrefs.SetString(PrefPendingPrefix + _pendingUid, pending.Encode()); PlayerPrefs.Save(); } catch { }
+            _pairingCommand = (scope == "mobile_bind" ? "趴绑定 " : "趴连接 ") + pairingCode;
+            Status = "请向 QQ Bot 发送（可点右侧复制）：\n" + _pairingCommand + "（2 分钟有效）";
+        }
+
+        private static void CompleteLogin(long code, Dictionary<string, object> value)
+        {
+            switch (Field(value, "status"))
+            {
+                case "succeeded":
+                    string token = Field(value, "access_token");
+                    string scope = Field(value, "scope");
+                    if (string.IsNullOrEmpty(scope)) scope = _activeScope ?? "mobile_hands";
+                    value.TryGetValue("account", out var account);
+                    if (!Regex.IsMatch(token, @"\A[A-Za-z0-9_-]{43,128}\z") ||
+                        !long.TryParse(Field(account as Dictionary<string, object>, "uid"), out _authorizedUid) ||
+                        _authorizedUid <= 0)
+                    {
+                        Reset("未能确认授权账号，请重新发起");
+                        return;
+                    }
+                    _session = token;
+                    _activeScope = scope;
+                    ClearPendingLogin();
+                    _reportDenied = false;
+                    _lastWasHands = false;
+                    _nextPoll = 0;
+                    _requestId = _verifier = _pairingCommand = null;
+                    _handDiagnostic = CloudHandDiagnosticState.None;
+                    PersistSession(_authorizedUid, token, scope);
+                    _lastUploadedReport = null;
+                    GameLibraryExporter.ResetMobileDedup();
+                    GameLibraryExporter.Request(0f);
+                    Status = scope == "mobile_bind"
+                        ? "全端账号连接成功！正在自动上传战绩与角色数据"
+                        : "已授权，等待允许观战的合作对局";
+                    return;
+                case "expired":
+                case "superseded":
+                case "failed":
+                    Reset("绑定码未通过或已失效，请重新生成");
+                    return;
+            }
+        }
+
+        private static void CompleteReport(long code, Dictionary<string, object> data)
+        {
+            string sent = _inFlightReportJson;
+            _inFlightReportJson = null;
+            if (code == 401)
+            {
+                if (!MobileCloudPollPolicy.CanReport(_activeScope))
+                {
+                    _reportDenied = true;
+                    _pendingReportJson = null;
+                    _nextPoll = 0;
+                    Status = "资料上传暂不可用，继续核对云端手牌连接";
+                    return;
+                }
+                ClearPersistedSession(_authorizedUid);
+                Reset("QQ 全端同步已失效或已在其他端重新登录，请重新绑定后再试");
+                return;
+            }
+            if (code == 200 && Field(data, "status") == "ok")
+            {
+                _lastUploadedReport = sent;
+                _reportRetryAt = 0f;
+                int detailsUpdated = 0;
+                if (data != null && data.TryGetValue("detailsUpdated", out var du) && du != null)
+                {
+                    int.TryParse(Convert.ToString(du, CultureInfo.InvariantCulture), out detailsUpdated);
+                }
+                if (detailsUpdated > 0) ConsumeQueuedDetails(detailsUpdated);
+                Status = "已同步最新账号数据与战绩到 QQ Bot";
+                return;
+            }
+            if (code == 400)
+            {
+                // Keep snapshot rejected error non-spammy while staying bound for live hands / future data.
+                _reportRetryAt = Now + 30f;
+                return;
+            }
+            if (!string.IsNullOrEmpty(sent) && _pendingReportJson == null)
+            {
+                _pendingReportJson = sent;
+            }
+            _reportRetryAt = Now + 15f;
+        }
+
+        private static void CompleteHandRead(long code, Dictionary<string, object> data, long room, long uid, long epoch)
+        {
+            if (uid != _authorizedUid || uid != XingShuRuntimeHost.CurrentLocalPlayerId) return;
+            if (code == 401)
+            {
+                ClearPersistedSession(uid);
+                Reset("授权已过期或已退出，请重新绑定");
+                return;
+            }
+            string rawStatus = Field(data, "status");
+            var state = MobileCloudPollPolicy.ClassifyLiveHandsStatus(code, rawStatus);
+            bool allBots = AllTeammatesAreBots(uid);
+            if (code != 200)
+            {
+                _handDiagnostic = state;
+                Status = MobileCloudPollPolicy.DescribeStatusForUi(state, allBots);
+                LogDiagnosticTransition(room, state, code, "http_error");
+                return;
+            }
+            switch (rawStatus)
+            {
+                case "ready":
+                    if (room != HandSessionLifecycle.ActiveRoomId() || epoch != HandSessionLifecycle.AndroidMatchEpoch) return;
+                    var payload = ReadHands(data, room, uid, epoch);
+                    if (payload == null)
+                    {
+                        _handDiagnostic = CloudHandDiagnosticState.WaitingCards;
+                        Status = "云端快照与本局不匹配，正在重新读取";
+                        LogDiagnosticTransition(room, _handDiagnostic, code, "payload_null");
+                        return;
+                    }
+                    if (HandTruthSource.RecordCloudMirror(payload, epoch))
+                    {
+                        _handDiagnostic = CloudHandDiagnosticState.Ready;
+                        XingShuRuntime.Utilities.HandCardDisplayManager.OverlayRenderDirty = true;
+                        HandCardDisplayManager.MarkOverlayDirty("CloudMirrorUpdated");
+                        try { HandCardDisplayManager.RefreshAllWidgets(); } catch { }
+                        Status = MobileCloudPollPolicy.DescribeStatusForUi(CloudHandDiagnosticState.Ready, allBots);
+                        LogDiagnosticTransition(room, CloudHandDiagnosticState.Ready, code, "ready");
+                    }
+                    else
+                    {
+                        _handDiagnostic = CloudHandDiagnosticState.WaitingCards;
+                        Status = MobileCloudPollPolicy.DescribeStatusForUi(CloudHandDiagnosticState.WaitingCards, allBots);
+                        LogDiagnosticTransition(room, CloudHandDiagnosticState.WaitingCards, code, "mirror_rejected");
+                    }
+                    return;
+                case "identity_mismatch":
+                    _handDiagnostic = CloudHandDiagnosticState.AccountMismatch;
+                    Status = MobileCloudPollPolicy.DescribeStatusForUi(CloudHandDiagnosticState.AccountMismatch, allBots);
+                    LogDiagnosticTransition(room, CloudHandDiagnosticState.AccountMismatch, code, rawStatus);
+                    return;
+                default:
+                    // Keep the latest valid teammate mirror alive across transient poll gaps;
+                    // match exit and room changes clear it through HandTruthSource lifecycle checks.
+                    _handDiagnostic = state;
+                    Status = MobileCloudPollPolicy.DescribeStatusForUi(state, allBots);
+                    LogDiagnosticTransition(room, state, code, rawStatus);
+                    return;
+            }
+        }
+
+        private static bool AllTeammatesAreBots(long selfUid)
+        {
+            try
+            {
+                var players = SimpleSingletonProvider<GameLogicManager>.inst?.room?.curRoomInfo?.Players;
+                if (players == null || players.Count == 0) return false;
+                bool sawTeammate = false;
+                foreach (var p in players)
+                {
+                    if (p == null || p.Id <= 0 || p.Id == selfUid) continue;
+                    sawTeammate = true;
+                    if (!p.IsBot) return false;
+                }
+                return sawTeammate;
+            }
+            catch { return false; }
+        }
+
+        private static void LogDiagnosticTransition(long room, CloudHandDiagnosticState state, long code, string rawStatus)
+        {
+            if (_lastLoggedDiagnostic == state && _lastDiagnosticRoom == room) return;
+            _lastLoggedDiagnostic = state;
+            _lastDiagnosticRoom = room;
+            XingShuRuntimeHost.LogLifecycle("[AndroidCloudHands] live-hands room=" + room + "; state=" + state +
+                "; code=" + code + "; raw=" + (string.IsNullOrEmpty(rawStatus) ? "-" : rawStatus));
+        }
+
+        private static SpectatorHandPayload ReadHands(Dictionary<string, object> data, long room, long uid, long epoch)
+        {
+            if (data == null || Field(data, "roomId") != room.ToString(CultureInfo.InvariantCulture) ||
+                Field(data, "playerId") != uid.ToString(CultureInfo.InvariantCulture) ||
+                !long.TryParse(Field(data, "observerId"), out long observer) || observer <= 0 ||
+                !data.TryGetValue("hands", out var raw) || !(raw is Dictionary<string, object> hands)) return null;
+            var players = new Dictionary<string, PlayerHandSummary>();
+            foreach (var entry in hands)
+            {
+                if (!long.TryParse(entry.Key, out long peer) || peer <= 0 || !(entry.Value is List<object> cards)) continue;
+                var hand = new List<int>();
+                foreach (object id in cards)
+                {
+                    if (int.TryParse(Convert.ToString(id, CultureInfo.InvariantCulture), out int cardId) && cardId > 0)
+                        hand.Add(cardId);
+                }
+                players[peer.ToString(CultureInfo.InvariantCulture)] = new PlayerHandSummary(peer, hand);
+            }
+            return new SpectatorHandPayload
+            {
+                roomId = room, playerId = uid, spectatorSessionEpoch = epoch, spectatorAccountPlayerId = observer,
+                sourcePlatform = "CLOUD_OFFICIAL", snapshotTimestamp = Field(data, "observedAt"), roomPlayers = players
+            };
+        }
+
+        private static void PostJson(string path, string jsonBody, string session,
+            Action<long, Dictionary<string, object>> callback)
+        {
+            var request = new UnityWebRequest(Origin + path, "POST");
+            try
+            {
+                request.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(jsonBody ?? "{}"));
+                request.downloadHandler = new DownloadHandlerBuffer();
+                request.timeout = 15;
+                request.redirectLimit = 0;
+                request.SetRequestHeader("Content-Type", "application/json");
+                if (session != null) request.SetRequestHeader("Authorization", "Bearer " + session);
+                request.SendWebRequest();
+                _request = request;
+                _onComplete = callback;
+            }
+            catch
+            {
+                request.Dispose();
+                callback(0, null);
+            }
+        }
+
+        internal static void Reset(string status = "云端绑定已关闭")
+        {
+            ClearPendingLogin();
+            if (_request != null)
+            {
+                _request.Abort();
+                _request.Dispose();
+                _request = null;
+            }
+            _onComplete = null;
+            _requestId = _verifier = _pairingCommand = _session = _activeScope = null;
+            _appHandoff = _appUid = null;
+            _pendingReportJson = _inFlightReportJson = _lastUploadedReport = null;
+            _authorizedUid = 0;
+            _reportDenied = _lastWasHands = false;
+            _handDiagnostic = CloudHandDiagnosticState.None;
+            _lastLoggedDiagnostic = CloudHandDiagnosticState.None;
+            _lastDiagnosticRoom = 0;
+            lock (QueuedDetails) { QueuedDetails.Clear(); }
+            HandTruthSource.ClearCloudMirror();
+            Status = status;
+        }
+
+        private static string Field(Dictionary<string, object> value, string key) =>
+            value != null && value.TryGetValue(key, out var field) && field != null
+                ? (field is string s ? s : Convert.ToString(field, CultureInfo.InvariantCulture))
+                : "";
+
+        private static string Base64Url(byte[] value) => Convert.ToBase64String(value).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+    }
+}
+#endif
