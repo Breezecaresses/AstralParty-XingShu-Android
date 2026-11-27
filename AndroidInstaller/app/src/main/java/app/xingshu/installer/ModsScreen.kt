@@ -50,6 +50,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -70,11 +71,12 @@ internal fun ModsScreen(
         if (selectedGroup == "全部") OfficialModulesCatalog.ALL
         else OfficialModulesCatalog.ALL.filter { it.group == selectedGroup }
     }
+    val isTablet = LocalConfiguration.current.screenWidthDp >= 600
 
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 16.dp),
+            .padding(horizontal = if (isTablet) 24.dp else 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
@@ -104,12 +106,12 @@ internal fun ModsScreen(
                         )
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "连接无线调试或 Shizuku 以写入游戏目录",
+                                text = "连接 Root / 无线调试 / Shizuku 以写入游戏目录",
                                 style = MaterialTheme.typography.titleMedium,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer,
                             )
                             Text(
-                                text = "Android 11+ 系统隔离了游戏数据目录；点击立即配置授权。",
+                                text = "修改游戏数据目录与模组文件需要先建立本地授权连接；点击立即配置。",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer,
                             )
@@ -469,76 +471,36 @@ internal fun ModsScreen(
             }
         }
 
-        // Individual 19 Official Modules Switches
-        items(visibleModules, key = { it.id }) { mod ->
-            val diskState = controller.officialModuleStates[mod.id] ?: "not_installed"
-            val checked = diskState == "enabled"
-            OutlinedCard(
-                colors = CardDefaults.outlinedCardColors(
-                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.90f),
-                ),
-                shape = RoundedCornerShape(16.dp),
-            ) {
+        // Individual Official Modules Switches (2-column grid on tablets)
+        if (isTablet) {
+            val pairedModules = visibleModules.chunked(2)
+            items(pairedModules, key = { pair -> pair.joinToString("_") { it.id } }) { pair ->
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.Top,
                 ) {
-                    Surface(
-                        color = if (checked) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.size(40.dp),
-                    ) {
-                        Column(
-                            modifier = Modifier.fillMaxSize(),
-                            verticalArrangement = Arrangement.Center,
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                        ) {
-                            Icon(
-                                Icons.Rounded.Extension,
-                                contentDescription = null,
-                                tint = if (checked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(20.dp),
-                            )
-                        }
-                    }
-                    Column(modifier = Modifier.weight(1f)) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            Text(
-                                text = mod.name,
-                                style = MaterialTheme.typography.titleMedium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Surface(
-                                color = MaterialTheme.colorScheme.surfaceContainerLow,
-                                shape = RoundedCornerShape(999.dp),
-                            ) {
-                                Text(
-                                    text = mod.group,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-                                )
-                            }
-                        }
-                        Text(
-                            text = mod.description,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    pair.forEach { mod ->
+                        OfficialModuleCard(
+                            mod = mod,
+                            checked = (controller.officialModuleStates[mod.id] ?: "not_installed") == "enabled",
+                            controller = controller,
+                            modifier = Modifier.weight(1f),
                         )
                     }
-                    Switch(
-                        checked = checked,
-                        enabled = !controller.busy && !controller.batchModsBusy,
-                        onCheckedChange = { enable -> controller.toggleOfficialModule(mod.id, enable) },
-                    )
+                    if (pair.size < 2) {
+                        Spacer(modifier = Modifier.weight(1f))
+                    }
                 }
+            }
+        } else {
+            items(visibleModules, key = { it.id }) { mod ->
+                OfficialModuleCard(
+                    mod = mod,
+                    checked = (controller.officialModuleStates[mod.id] ?: "not_installed") == "enabled",
+                    controller = controller,
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
         }
         } else {
@@ -587,46 +549,151 @@ internal fun ModsScreen(
                     )
                 }
             }
-        } else {
-            items(controller.installedMods, key = { it.id }) { entry ->
-                OutlinedCard(
-                    colors = CardDefaults.outlinedCardColors(
-                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.90f),
-                    ),
+        } else if (isTablet) {
+            val pairedInstalled = controller.installedMods.chunked(2)
+            items(pairedInstalled, key = { pair -> pair.joinToString("_") { it.id } }) { pair ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.Top,
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = entry.name.ifEmpty { entry.id },
-                                style = MaterialTheme.typography.titleMedium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Text(
-                                text = "${if (entry.isXspkgModule()) "优化模块 (.xspkg)" else "贴图包 (modimg)"} · v${entry.version} · 文件 ${entry.presentCount}/${maxOf(1, entry.declaredCount)}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        OutlinedButton(
-                            onClick = { controller.removeInstalledMod(entry) },
-                            enabled = !controller.modTaskBusy && !controller.busy,
-                        ) {
-                            Text("卸载")
-                        }
+                    pair.forEach { entry ->
+                        InstalledModCard(entry = entry, controller = controller, modifier = Modifier.weight(1f))
+                    }
+                    if (pair.size < 2) {
+                        Spacer(modifier = Modifier.weight(1f))
                     }
                 }
+            }
+        } else {
+            items(controller.installedMods, key = { it.id }) { entry ->
+                InstalledModCard(entry = entry, controller = controller, modifier = Modifier.fillMaxWidth())
             }
         }
         }
 
         item { Spacer(modifier = Modifier.height(14.dp)) }
+    }
+}
+
+@Composable
+private fun OfficialModuleCard(
+    mod: OfficialModulesCatalog.OfficialModule,
+    checked: Boolean,
+    controller: AppController,
+    modifier: Modifier = Modifier,
+) {
+    OutlinedCard(
+        modifier = modifier,
+        colors = CardDefaults.outlinedCardColors(
+            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.90f),
+        ),
+        shape = RoundedCornerShape(16.dp),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Surface(
+                color = if (checked) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.size(40.dp),
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Icon(
+                        Icons.Rounded.Extension,
+                        contentDescription = null,
+                        tint = if (checked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        text = mod.name,
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                        shape = RoundedCornerShape(999.dp),
+                    ) {
+                        Text(
+                            text = mod.group,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                        )
+                    }
+                }
+                Text(
+                    text = mod.description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Switch(
+                checked = checked,
+                enabled = !controller.busy && !controller.batchModsBusy,
+                onCheckedChange = { enable -> controller.toggleOfficialModule(mod.id, enable) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun InstalledModCard(
+    entry: InstalledModEntry,
+    controller: AppController,
+    modifier: Modifier = Modifier,
+) {
+    OutlinedCard(
+        modifier = modifier,
+        colors = CardDefaults.outlinedCardColors(
+            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.90f),
+        ),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = entry.name.ifEmpty { entry.id },
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = "${if (entry.isXspkgModule()) "优化模块 (.xspkg)" else "贴图包 (modimg)"} · v${entry.version} · 文件 ${entry.presentCount}/${maxOf(1, entry.declaredCount)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            OutlinedButton(
+                onClick = { controller.removeInstalledMod(entry) },
+                enabled = !controller.modTaskBusy && !controller.busy,
+            ) {
+                Text("卸载")
+            }
+        }
     }
 }
 

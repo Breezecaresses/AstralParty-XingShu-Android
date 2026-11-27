@@ -1,6 +1,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <supports-screens
+        android:smallScreens="true"
+        android:normalScreens="true"
+        android:largeScreens="true"
+        android:xlargeScreens="true"
+        android:anyDensity="true" />
     <queries>
         <package android:name="com.feimo.astralparty" />
         <package android:name="com.feimo.jxpd.mi" />
@@ -8,10 +14,12 @@
         <package android:name="com.feimo.jxpd.bili" />
         <package android:name="com.feimo.astralparty.huawei" />
         <package android:name="com.feimo.jxpd.huawei" />
+        <package android:name="com.jxpd.feimo.nearme.gamecenter" />
         <package android:name="com.feimo.astralparty.nearme.gamecenter" />
         <package android:name="com.feimo.jxpd.nearme.gamecenter" />
         <package android:name="com.feimo.astralparty.vivo" />
         <package android:name="com.feimo.jxpd.vivo" />
+        <package android:name="com.jxpd.feimo.vivo" />
         <package android:name="com.jxpd.feimo.m4399" />
         <package android:name="com.feimo.jxpd.m4399" />
         <package android:name="com.feimo.astralparty.m4399" />
@@ -19,15 +27,22 @@
         <package android:name="com.feimo.jxpd.honor" />
         <package android:name="com.tencent.tmgp.astralparty" />
         <package android:name="moe.shizuku.privileged.api" />
+        <package android:name="me.weishu.kernelsu" />
+        <package android:name="com.rifsxd.ksunext" />
+        <package android:name="com.sukisu.ultra" />
+        <package android:name="me.bmax.apatch" />
+        <package android:name="com.topjohnwu.magisk" />
         <package android:name="com.tencent.mobileqq" />
     </queries>
     <application android:allowBackup="false" android:label="星枢启动器"
         android:icon="@mipmap/ic_xingshu" android:roundIcon="@mipmap/ic_xingshu" android:theme="@android:style/Theme.Material.Light.NoActionBar"
+        android:resizeableActivity="true"
         android:supportsRtl="true">
         <provider android:name=".UpdateApkProvider" android:authorities="${applicationId}.update"
             android:exported="false" android:grantUriPermissions="true" />
         <activity android:name=".MainActivity" android:exported="true"
             android:launchMode="singleTask"
+            android:resizeableActivity="true"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize|uiMode">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

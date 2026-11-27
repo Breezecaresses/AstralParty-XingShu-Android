@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -82,6 +83,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -91,6 +93,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -101,6 +104,7 @@ internal fun WorkshopScreen(controller: AppController) {
     val cacheDir = remember(context) { PayloadDownloadManager.cacheDir(context) }
     var searchQuery by remember { mutableStateOf("") }
     val kindFilter = controller.workshopKindFilter
+    val isTablet = LocalConfiguration.current.screenWidthDp >= 600
 
     LaunchedEffect(Unit) {
         controller.refreshWorkshopAsync(userInitiated = false)
@@ -139,7 +143,7 @@ internal fun WorkshopScreen(controller: AppController) {
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 16.dp),
+            .padding(horizontal = if (isTablet) 24.dp else 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         // Platform Account Status Bar for Emote Reactions
@@ -327,161 +331,35 @@ internal fun WorkshopScreen(controller: AppController) {
                     )
                 }
             }
-        } else {
-            items(filteredMods, key = { "${it.id}_${it.versionId}" }) { mod ->
-                val isXspkg = mod.isXspkgModule()
-                val installedEntry = controller.installedMods.firstOrNull { it.id == mod.id }
-                val sameInstalled = installedEntry != null && installedEntry.sha256.equals(mod.sha256, ignoreCase = true)
-                val cached = PayloadDownloadManager.hasCachedFile(cacheDir, mod.sha256, mod.sizeBytes)
-                val activeProg = controller.modProgress.takeIf { it.modId == mod.id }
-
-                if (mod.previewUrl.isNotEmpty()) {
-                    LaunchedEffect(mod.previewUrl) {
-                        controller.requestWorkshopThumbnail(mod.previewUrl)
-                    }
-                }
-                val thumbBitmap = if (mod.previewUrl.isNotEmpty()) controller.thumbnails[mod.previewUrl] else null
-
-                OutlinedCard(
-                    onClick = { controller.workshopDetailMod = mod },
-                    colors = CardDefaults.outlinedCardColors(
-                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
-                    ),
-                    shape = RoundedCornerShape(18.dp),
+        } else if (isTablet) {
+            val pairedMods = filteredMods.chunked(2)
+            items(pairedMods, key = { pair -> pair.joinToString("_") { "${it.id}_${it.versionId}" } }) { pair ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.Top,
                 ) {
-                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            Surface(
-                                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                                shape = RoundedCornerShape(14.dp),
-                                modifier = Modifier
-                                    .size(56.dp)
-                                    .clip(RoundedCornerShape(14.dp)),
-                            ) {
-                                if (thumbBitmap != null) {
-                                    Image(
-                                        bitmap = thumbBitmap,
-                                        contentDescription = mod.name,
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier.fillMaxSize(),
-                                    )
-                                } else {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Icon(
-                                            if (isXspkg) Icons.Rounded.AutoFixHigh else Icons.Rounded.Image,
-                                            contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.primary,
-                                        )
-                                    }
-                                }
-                            }
-
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = mod.name,
-                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                Text(
-                                    text = buildString {
-                                        append("${mod.author} · v${mod.version}")
-                                        if (mod.sizeBytes > 0L) {
-                                            append(" · ${PayloadDownloadManager.formatBytes(mod.sizeBytes)}")
-                                        }
-                                        append(" · ${mod.downloads} 下载")
-                                        if (mod.reactionTotal > 0) {
-                                            append(" · ${mod.reactionTotal} 回应")
-                                        }
-                                    },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                FlowRow(
-                                    modifier = Modifier.padding(top = 4.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                                ) {
-                                    BadgeChip(mod.categoryLabel.ifEmpty { if (isXspkg) "官方优化" else "社区模组" })
-                                    BadgeChip(
-                                        if (mod.androidInstallable) mod.platformLabel.ifEmpty { "手机端 (PE)" }
-                                        else "仅 PC 端"
-                                    )
-                                    if (mod.androidInstallable) {
-                                        if (sameInstalled) BadgeChip("已安装")
-                                        else if (cached) BadgeChip("已缓存")
-                                    }
-                                }
-                            }
-                        }
-
-                        if (mod.description.isNotBlank()) {
-                            Text(
-                                text = mod.description,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-
-                        if (activeProg != null) {
-                            val frac = if (activeProg.total > 0L) (activeProg.received.toFloat() / activeProg.total.toFloat()).coerceIn(0f, 1f) else 0f
-                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text(
-                                    text = "${activeProg.stage} ${(frac * 100).toInt()}%",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.primary,
-                                )
-                                if (activeProg.total > 0L) {
-                                    LinearProgressIndicator(progress = { frac }, modifier = Modifier.fillMaxWidth())
-                                } else {
-                                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                                }
-                            }
-                        }
-
-                        // Character Sticker Reaction Bar
-                        EmoteReactionBar(
+                    pair.forEach { mod ->
+                        WorkshopModCard(
                             mod = mod,
                             controller = controller,
+                            cacheDir = cacheDir,
+                            modifier = Modifier.weight(1f),
                         )
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.End,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            TextButton(onClick = { controller.workshopDetailMod = mod }) {
-                                Text("详情")
-                            }
-                            Spacer(modifier = Modifier.width(6.dp))
-                            if (mod.androidInstallable) {
-                                FilledTonalButton(
-                                    onClick = { controller.pendingWorkshopPromptMod = mod },
-                                    enabled = !controller.modTaskBusy && !controller.busy,
-                                ) {
-                                    Icon(Icons.Rounded.Download, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(if (sameInstalled) "重装" else if (cached) "立即安装" else "下载并安装")
-                                }
-                            } else {
-                                OutlinedButton(
-                                    onClick = { controller.openExternalBrowser(mod.webDetailUrl()) },
-                                ) {
-                                    Icon(Icons.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("网页查看")
-                                }
-                            }
-                        }
+                    }
+                    if (pair.size < 2) {
+                        Spacer(modifier = Modifier.weight(1f))
                     }
                 }
+            }
+        } else {
+            items(filteredMods, key = { "${it.id}_${it.versionId}" }) { mod ->
+                WorkshopModCard(
+                    mod = mod,
+                    controller = controller,
+                    cacheDir = cacheDir,
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
         }
 
@@ -493,6 +371,7 @@ internal fun WorkshopScreen(controller: AppController) {
     if (detailMod != null) {
         AlertDialog(
             onDismissRequest = { controller.workshopDetailMod = null },
+            modifier = Modifier.widthIn(max = 680.dp),
             title = { Text(detailMod.name) },
             text = {
                 Column(
@@ -1011,5 +890,182 @@ private fun BadgeChip(label: String) {
             color = MaterialTheme.colorScheme.onSecondaryContainer,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
         )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun WorkshopModCard(
+    mod: AndroidWorkshopClient.WorkshopMod,
+    controller: AppController,
+    cacheDir: File,
+    modifier: Modifier = Modifier,
+) {
+    val previewUrl = mod.previewUrl
+    LaunchedEffect(previewUrl) {
+        if (previewUrl.isNotBlank()) {
+            controller.requestWorkshopThumbnail(previewUrl)
+        }
+    }
+    val thumb = if (previewUrl.isNotBlank()) controller.thumbnails[previewUrl] else null
+    val isInstalled = remember(
+        mod.id,
+        mod.fileName,
+        controller.installedMods.size,
+        controller.officialModuleStates.size,
+    ) {
+        controller.installedMods.any {
+            it.id == mod.id ||
+                (mod.fileName.isNotBlank() && it.name.equals(mod.fileName, ignoreCase = true))
+        } || (mod.isXspkgModule() && controller.officialModuleStates.containsKey(mod.id))
+    }
+    val isCached = remember(mod.sha256, mod.sizeBytes, controller.cacheBytes) {
+        mod.androidInstallable &&
+            mod.sha256.isNotBlank() &&
+            PayloadDownloadManager.getCachedIfValid(cacheDir, mod.sha256, mod.sizeBytes) != null
+    }
+    val progress = controller.modProgress
+    val isDownloading = progress.modId == mod.id
+
+    OutlinedCard(
+        onClick = { controller.workshopDetailMod = mod },
+        modifier = modifier,
+        colors = CardDefaults.outlinedCardColors(
+            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+        ),
+        shape = MaterialTheme.shapes.large,
+    ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    modifier = Modifier.size(64.dp),
+                ) {
+                    if (thumb != null) {
+                        Image(
+                            bitmap = thumb,
+                            contentDescription = mod.name,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    } else {
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = if (mod.isXspkgModule()) Icons.Rounded.AutoFixHigh else Icons.Rounded.Image,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(28.dp),
+                            )
+                        }
+                    }
+                }
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = mod.name,
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = buildString {
+                            append(mod.author.ifEmpty { "星枢社区" })
+                            if (mod.version.isNotBlank()) append(" · v${mod.version}")
+                            append(" · ${mod.downloads} 次下载")
+                            if (mod.sizeBytes > 0L) append(" · ${PayloadDownloadManager.formatBytes(mod.sizeBytes)}")
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                if (mod.categoryLabel.isNotBlank()) {
+                    BadgeChip(mod.categoryLabel)
+                }
+                BadgeChip(
+                    if (mod.androidInstallable) mod.platformLabel.ifEmpty { "手机端 (PE)" }
+                    else "仅 PC 端"
+                )
+                if (isInstalled) {
+                    BadgeChip("已安装")
+                } else if (isCached) {
+                    BadgeChip("已缓存")
+                }
+            }
+
+            if (mod.description.isNotBlank()) {
+                Text(
+                    text = mod.description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+
+            EmoteReactionBar(mod = mod, controller = controller)
+
+            if (isDownloading) {
+                val frac = if (progress.total > 0L) (progress.received.toFloat() / progress.total.toFloat()).coerceIn(0f, 1f) else 0f
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = "${progress.stage} (${PayloadDownloadManager.formatBytes(progress.received)} / ${PayloadDownloadManager.formatBytes(progress.total)})",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    if (progress.total > 0L) {
+                        LinearProgressIndicator(progress = { frac }, modifier = Modifier.fillMaxWidth())
+                    } else {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedButton(
+                    onClick = { controller.workshopDetailMod = mod },
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                ) {
+                    Text("详情")
+                }
+                if (mod.androidInstallable) {
+                    Button(
+                        onClick = { controller.pendingWorkshopPromptMod = mod },
+                        enabled = !controller.modTaskBusy && !controller.busy,
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    ) {
+                        Icon(Icons.Rounded.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(if (isInstalled) "重新安装" else "下载并安装")
+                    }
+                } else {
+                    FilledTonalButton(
+                        onClick = { controller.openExternalBrowser(mod.webDetailUrl()) },
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    ) {
+                        Icon(Icons.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("网页查看")
+                    }
+                }
+            }
+        }
     }
 }

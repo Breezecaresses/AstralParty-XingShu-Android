@@ -20,12 +20,14 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AudioFile
 import androidx.compose.material.icons.rounded.BugReport
@@ -103,17 +105,24 @@ private val CUSTOMIZE_SECTIONS = listOf(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun CustomizeScreen(controller: AppController) {
-    LaunchedEffect(controller.selectedPackageName, controller.useShizuku, controller.adbConnected) {
+    LaunchedEffect(
+        controller.selectedPackageName,
+        controller.useRoot,
+        controller.rootConnected,
+        controller.useShizuku,
+        controller.adbConnected,
+    ) {
         if (controller.isPrivilegeReady()) {
             controller.refreshCustomizeStateAsync(userInitiated = false)
         }
     }
+    val isTablet = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 600
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(horizontal = if (isTablet) 24.dp else 16.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         // Horizontal section selector matching Desktop Customize Workbench
@@ -202,7 +211,7 @@ private fun PrivilegeRequiredBanner(controller: AppController, actionText: Strin
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Text(
-                text = "当前未连接无线调试 / Shizuku，$actionText 需要游戏目录读写权限。",
+                text = "当前未连接 Root / 无线调试 / Shizuku，$actionText 需要游戏目录读写权限。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSecondaryContainer,
                 modifier = Modifier.weight(1f),
@@ -220,6 +229,7 @@ private fun PrivilegeRequiredBanner(controller: AppController, actionText: Strin
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 private fun LobbyBgSection(controller: AppController) {
+    val isTablet = LocalConfiguration.current.screenWidthDp >= 600
     val cfg = controller.lobbyBgConfig
     val selectedName = cfg.selectedFile
     val selectedEntry = controller.lobbyBgFiles.firstOrNull { it.name == selectedName }
@@ -264,8 +274,7 @@ private fun LobbyBgSection(controller: AppController) {
                 shape = RoundedCornerShape(14.dp),
                 color = MaterialTheme.colorScheme.surfaceContainerHighest,
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                modifier = Modifier
-                    .fillMaxWidth()
+                modifier = (if (isTablet) Modifier.widthIn(max = 460.dp).fillMaxWidth() else Modifier.fillMaxWidth())
                     .aspectRatio(16f / 9f)
                     .clip(RoundedCornerShape(14.dp)),
             ) {
@@ -1000,6 +1009,7 @@ private fun AppearanceSection(controller: AppController) {
     }
 
     // Theme Preset Swatches & Custom Hex
+    val swatchCols = if (androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 600) 6 else 3
     OutlinedCard(
         colors = CardDefaults.outlinedCardColors(
             containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
@@ -1009,7 +1019,7 @@ private fun AppearanceSection(controller: AppController) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("星枢官方色板（与桌面端同步）", style = MaterialTheme.typography.titleMedium)
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                ThemePalette.PRESETS.toList().chunked(3).forEach { rowPresets ->
+                ThemePalette.PRESETS.toList().chunked(swatchCols).forEach { rowPresets ->
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1044,7 +1054,7 @@ private fun AppearanceSection(controller: AppController) {
                                 Text(preset.nameZh, style = MaterialTheme.typography.labelMedium, maxLines = 1)
                             }
                         }
-                        repeat(3 - rowPresets.size) {
+                        repeat(swatchCols - rowPresets.size) {
                             Spacer(modifier = Modifier.weight(1f))
                         }
                     }

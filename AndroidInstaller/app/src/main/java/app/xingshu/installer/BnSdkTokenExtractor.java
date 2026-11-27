@@ -97,6 +97,10 @@ final class BnSdkTokenExtractor {
         switch (id) {
             case "110001934":
                 return new ChannelToken("XIAOMI", id, "小米渠道", userId, sdkToken, true);
+            case "110001935":
+                return new ChannelToken("VIVO", id, "vivo渠道", userId, sdkToken, true);
+            case "110001936":
+                return new ChannelToken("OPPO", id, "OPPO渠道", userId, sdkToken, true);
             case "110001937":
                 return new ChannelToken("TAPTAP", id, "TapTap 安卓", userId, sdkToken, true);
             case "110001958":
@@ -119,6 +123,12 @@ final class BnSdkTokenExtractor {
     static String inferAppIdFromPackage(String text) {
         if (text == null || text.isEmpty()) return "";
         if (text.contains("com.feimo.jxpd.mi")) return "110001934";
+        if (text.contains("com.feimo.jxpd.vivo")
+            || text.contains("com.feimo.astralparty.vivo")
+            || text.contains("com.jxpd.feimo.vivo")) return "110001935";
+        if (text.contains("com.jxpd.feimo.nearme.gamecenter")
+            || text.contains("com.feimo.jxpd.nearme.gamecenter")
+            || text.contains("com.feimo.astralparty.nearme.gamecenter")) return "110001936";
         if (text.contains("com.feimo.astralparty.bilibili") || text.contains("com.feimo.jxpd.bili")) return "110001957";
         if (text.contains("com.jxpd.feimo.m4399") || text.contains("com.feimo.jxpd.m4399") || text.contains("com.feimo.astralparty.m4399")) return "110001941";
         if (text.contains("com.feimo.astralparty")) return "110001937";
@@ -132,6 +142,10 @@ final class BnSdkTokenExtractor {
         switch (meta.platform) {
             case "XIAOMI":
                 return "110001934";
+            case "VIVO":
+                return "110001935";
+            case "OPPO":
+                return "110001936";
             case "BILIBILI":
                 return "110001957";
             case "M4399":

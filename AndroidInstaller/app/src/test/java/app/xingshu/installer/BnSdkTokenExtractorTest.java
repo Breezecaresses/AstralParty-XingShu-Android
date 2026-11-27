@@ -191,4 +191,46 @@ public class BnSdkTokenExtractorTest {
         assertEquals("M4399", parsed.get(0).platform);
         assertTrue(parsed.get(0).nativeSupported);
     }
+
+    @Test
+    public void recognizesOppoChannelAndInfersRealPackageAppId() throws Exception {
+        String oppoTok = "05Q1OppoLiveToken1234567890abcdefghijklmnopqrstuvwxyzABCDEF";
+        assertEquals("110001936", BnSdkTokenExtractor.inferAppIdFromPackage("package=com.jxpd.feimo.nearme.gamecenter"));
+        assertEquals("110001936", BnSdkTokenExtractor.appIdForPackage("com.jxpd.feimo.nearme.gamecenter"));
+
+        BnSdkTokenExtractor.ChannelToken classified = BnSdkTokenExtractor.classifyApp("110001936", "bot5 (UID 3112086)", oppoTok);
+        assertEquals("OPPO", classified.platform);
+        assertEquals("110001936", classified.appId);
+        assertEquals("OPPO渠道", classified.label);
+        assertTrue(classified.nativeSupported);
+        assertFalse(classified.displaySummary().contains(oppoTok));
+        assertFalse(classified.displaySummary().contains("趴绑定"));
+
+        String json = "{\"tokens\":[{\"platform\":\"OPPO\",\"appId\":\"110001936\",\"label\":\"OPPO渠道\",\"userId\":\"bot5 (UID 3112086)\",\"sdkToken\":\"" + oppoTok + "\",\"nativeSupported\":true}]}";
+        List<BnSdkTokenExtractor.ChannelToken> parsed = BnSdkTokenExtractor.parseTokensOutput(json, "110001936");
+        assertEquals(1, parsed.size());
+        assertEquals("OPPO", parsed.get(0).platform);
+        assertTrue(parsed.get(0).nativeSupported);
+    }
+
+    @Test
+    public void recognizesVivoChannelAndInfersRealPackageAppId() throws Exception {
+        String vivoTok = "05Q1VivoLiveToken1234567890abcdefghijklmnopqrstuvwxyzABCDEF";
+        assertEquals("110001935", BnSdkTokenExtractor.inferAppIdFromPackage("package=com.feimo.jxpd.vivo"));
+        assertEquals("110001935", BnSdkTokenExtractor.appIdForPackage("com.feimo.jxpd.vivo"));
+
+        BnSdkTokenExtractor.ChannelToken classified = BnSdkTokenExtractor.classifyApp("110001935", "bot6 (UID 3112110)", vivoTok);
+        assertEquals("VIVO", classified.platform);
+        assertEquals("110001935", classified.appId);
+        assertEquals("vivo渠道", classified.label);
+        assertTrue(classified.nativeSupported);
+        assertFalse(classified.displaySummary().contains(vivoTok));
+        assertFalse(classified.displaySummary().contains("趴绑定"));
+
+        String json = "{\"tokens\":[{\"platform\":\"VIVO\",\"appId\":\"110001935\",\"label\":\"vivo渠道\",\"userId\":\"bot6 (UID 3112110)\",\"sdkToken\":\"" + vivoTok + "\",\"nativeSupported\":true}]}";
+        List<BnSdkTokenExtractor.ChannelToken> parsed = BnSdkTokenExtractor.parseTokensOutput(json, "110001935");
+        assertEquals(1, parsed.size());
+        assertEquals("VIVO", parsed.get(0).platform);
+        assertTrue(parsed.get(0).nativeSupported);
+    }
 }
